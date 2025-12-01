@@ -1,0 +1,44 @@
+* {
+    font-family: "Segoe UI", "Noto Sans", "Ubuntu";
+    color: #E8E8E8;
+}
+
+QMainWindow, QWidget {
+    background: #0f172a;
+}
+
+QTableWidget {
+    background: #111827;
+    border: 1px solid #1f2937;
+    gridline-color: #1f2937;
+}
+
+QPushButton {
+    background: rgba(59,130,246,0.15);
+    border: 1px solid rgba(59,130,246,0.3);
+    border-radius: 10px;
+    padding: 8px 12px;
+}
+
+QPushButton:hover {
+    background: rgba(59,130,246,0.25);
+}
+
+QGroupBox {
+    border: 1px solid #1f2937;
+    border-radius: 12px;
+    margin-top: 12px;
+    padding: 12px;
+    background: rgba(255,255,255,0.04);
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 6px;
+}
+
+QTextEdit {
+    background: #111827;
+    border: 1px solid #1f2937;
+}
