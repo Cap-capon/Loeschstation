@@ -96,7 +96,7 @@ class MainWindow(QMainWindow):
 
         btn_row = QHBoxLayout()
         self.btn_refresh = QPushButton("Aktualisieren")
-        self.btn_refresh.clicked.connect(self.refresh_devices)
+        self.btn_refresh.clicked.connect(self.on_refresh_clicked)
         btn_row.addWidget(self.btn_refresh)
 
         self.btn_cert_gui = QPushButton("Zertifikate öffnen")
@@ -158,7 +158,11 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right)
 
         self.status_logger = StatusLogger(self._append_status)
-        self.refresh_devices()
+        try:
+            raid_storcli.set_all_drives_to_jbod()
+        except Exception as exc:  # pragma: no cover - defensive
+            self._append_status(f"StorCLI JBOD-Fehler: {exc}")
+        self._reload_devices()
 
     def _icon(self, name: str) -> QIcon:
         icon_path = os.path.join(os.path.dirname(__file__), "..", "img", name)
@@ -184,9 +188,12 @@ class MainWindow(QMainWindow):
         self.status_log.append(text)
         self.debug_logger.info(text)
 
-    def refresh_devices(self):
+    def append_status(self, text: str) -> None:
+        self._append_status(text)
+
+    def _reload_devices(self):
         show_system = self.config.get("show_system_disks", False) or self.expert_mode.enabled
-        devices = device_scan.scan_devices(show_system)
+        devices = device_scan.scan_all_devices(show_system)
         self.device_table.setRowCount(0)
         for row, dev in enumerate(devices):
             self.device_table.insertRow(row)
@@ -194,7 +201,11 @@ class MainWindow(QMainWindow):
                 item = QTableWidgetItem(str(dev.get(key, "")))
                 self.device_table.setItem(row, col, item)
         self.device_table.resizeColumnsToContents()
+        self.status_label.setText(device_scan.get_last_warning())
         self.status_logger.info(f"{len(devices)} Laufwerke geladen")
+
+    def refresh_devices(self):
+        self._reload_devices()
 
     def selected_devices(self) -> List[Dict]:
         result = []
@@ -278,27 +289,40 @@ class MainWindow(QMainWindow):
             self.status_logger.info("ShredOS Reboot ausgelöst")
 
     def show_storcli_overview(self):
-        data = raid_storcli.storcli_overview()
+        try:
+            data = raid_storcli.storcli_overview()
+        except Exception as exc:  # pragma: no cover - defensive
+            self.status_logger.error(f"StorCLI Übersicht fehlgeschlagen: {exc}")
+            self.status_label.setText("WARNUNG: StorCLI nicht verfügbar")
+            return
         self._show_json_dialog("StorCLI Übersicht", data)
 
     def show_storcli_physical(self):
-        controllers = raid_storcli.list_controllers_json()
         merged = {}
-        for ctrl in controllers:
-            cid = ctrl.get("id")
-            merged[cid] = raid_storcli.list_physical_drives(cid)
+        try:
+            controllers = raid_storcli.list_controllers()
+            for ctrl in controllers:
+                cid = ctrl.get("id")
+                if cid is None:
+                    continue
+                merged[cid] = raid_storcli.list_physical_drives(cid)
+        except Exception as exc:  # pragma: no cover - defensive
+            self.status_logger.error(f"StorCLI Physical fehlgeschlagen: {exc}")
+            self.status_label.setText("WARNUNG: StorCLI nicht verfügbar")
+            return
         self._show_json_dialog("StorCLI Physical", merged)
 
     def set_megaraid_jbod(self):
         if not self.expert_mode.enabled:
             QMessageBox.warning(self, "Expertenmodus", "Bitte Expertenmodus aktivieren, um JBOD zu setzen.")
             return
-        success = raid_storcli.set_all_drives_to_jbod()
-        if success:
-            self.status_logger.success("Alle MegaRAID Drives in JBOD versetzt")
-        else:
-            self.status_logger.error("JBOD-Befehl fehlgeschlagen oder kein StorCLI")
-        self.refresh_devices()
+        try:
+            raid_storcli.set_all_drives_to_jbod()
+            self.status_logger.info("JBOD-Befehl ausgeführt")
+        except Exception as exc:  # pragma: no cover - defensive
+            self.status_logger.error(f"StorCLI JBOD-Fehler: {exc}")
+            self.status_label.setText("WARNUNG: StorCLI nicht verfügbar")
+        self._reload_devices()
 
     def _show_json_dialog(self, title: str, data):
         pretty = json.dumps(data, indent=2, ensure_ascii=False) if data else "Keine Daten"
@@ -341,3 +365,10 @@ class MainWindow(QMainWindow):
         self.refresh_devices()
         if hasattr(self, "btn_jbod"):
             self.btn_jbod.setEnabled(enabled)
+
+    def on_refresh_clicked(self):
+        try:
+            raid_storcli.set_all_drives_to_jbod()
+        except Exception as exc:  # pragma: no cover - defensive
+            self._append_status(f"StorCLI JBOD-Fehler: {exc}")
+        self._reload_devices()

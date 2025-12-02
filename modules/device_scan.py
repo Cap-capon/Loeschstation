@@ -7,20 +7,27 @@ from modules import raid_storcli
 
 logger = logging.getLogger("loeschstation")
 
+_last_warning: str = ""
+
+
+def _set_warning(message: str) -> None:
+    global _last_warning
+    _last_warning = message
+    if message:
+        logger.warning(message)
+
+
+def get_last_warning() -> str:
+    return _last_warning
+
 
 def _run_lsblk() -> Dict:
-    commands = [
-        ["lsblk", "-J", "-O"],
-        ["lsblk", "-J", "-O", "-b"],
-    ]
-    for cmd in commands:
-        try:
-            output = subprocess.check_output(cmd, text=True)
-            return json.loads(output)
-        except (subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError) as exc:
-            logger.error("lsblk fehlgeschlagen (%s): %s", cmd, exc)
-            continue
-    return {"blockdevices": []}
+    try:
+        output = subprocess.check_output(["lsblk", "-O", "-J"], text=True)
+        return json.loads(output)
+    except (subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError) as exc:
+        logger.error("lsblk fehlgeschlagen: %s", exc)
+        return {"blockdevices": []}
 
 
 def _collect_mountpoints(dev: Dict) -> Set[str]:
@@ -44,42 +51,95 @@ def _is_system_disk(dev: Dict) -> bool:
     return any(mp in system_points or mp.startswith("/var/") or mp.startswith("/usr/") or mp.startswith("/home/") for mp in mountpoints)
 
 
-def _scan_linux_disks(show_system: bool) -> List[Dict]:
+def scan_lsblk_disks() -> List[Dict]:
+    """
+    Nutzt 'lsblk -O -J', filtert TYPE=="disk" und markiert Systemlaufwerke.
+    """
+
     data = _run_lsblk()
     devices: List[Dict] = []
     for dev in data.get("blockdevices", []):
         if dev.get("type") != "disk":
             continue
-        if not show_system and _is_system_disk(dev):
-            continue
         path = dev.get("path") or f"/dev/{dev.get('name', '')}"
         devices.append(
             {
-                "device": path,
+                "device": dev.get("name", path),
                 "path": path,
                 "size": dev.get("size", ""),
                 "model": dev.get("model", ""),
                 "serial": dev.get("serial", ""),
                 "transport": dev.get("tran", dev.get("subsystems", "")),
-                "source": "linux",
+                "is_system": _is_system_disk(dev),
             }
         )
     return devices
 
 
-def _scan_megaraid_devices() -> List[Dict]:
+def scan_megaraid_devices() -> List[Dict]:
+    """
+    Nutzt StorCLI, um physikalische (und später virtuelle) MegaRAID-Drives zu erfassen.
+    """
+
     devices: List[Dict] = []
-    controllers = raid_storcli.list_controllers_json()
+    had_warning = False
+    try:
+        controllers = raid_storcli.list_controllers()
+    except Exception as exc:  # pragma: no cover - defensive
+        had_warning = True
+        _set_warning(f"StorCLI Fehler (Controller): {exc}")
+        logger.debug("StorCLI Controller-Scan fehlgeschlagen: %s", exc, exc_info=True)
+        return devices
+
     for ctrl in controllers:
         cid = ctrl.get("id")
         if cid is None:
             continue
-        devices.extend(raid_storcli.list_physical_drives(cid))
-        devices.extend(raid_storcli.list_virtual_drives(cid))
+        try:
+            pds = raid_storcli.list_physical_drives(cid)
+        except Exception as exc:  # pragma: no cover - defensive
+            had_warning = True
+            _set_warning(f"StorCLI Fehler (C{cid} PD LIST): {exc}")
+            logger.debug("StorCLI PD-Liste fehlgeschlagen für Controller %s: %s", cid, exc, exc_info=True)
+            continue
+
+        for pd in pds:
+            dev_name = f"C{cid} PD {pd['eid_slt']}"
+            virtual_path = f"/dev/megaraid/{cid}/{pd['eid_slt']}"
+            devices.append(
+                {
+                    "device": dev_name,
+                    "path": virtual_path,
+                    "size": pd.get("size", ""),
+                    "model": pd.get("model", ""),
+                    "serial": "",
+                    "transport": f"storcli:{pd.get('intf', '')}",
+                    "is_system": False,
+                }
+            )
+    if not had_warning:
+        _set_warning("")
     return devices
 
 
-def scan_devices(show_system: bool) -> List[Dict]:
-    devices = _scan_linux_disks(show_system)
-    devices.extend(_scan_megaraid_devices())
-    return devices
+def scan_all_devices(show_system_disks: bool) -> List[Dict]:
+    """
+    Ruft scan_lsblk_disks() und scan_megaraid_devices() auf, filtert Systemdisks
+    je nach Einstellung und liefert die kombinierte Liste.
+    """
+
+    try:
+        linux_devices = scan_lsblk_disks()
+        if not show_system_disks:
+            linux_devices = [dev for dev in linux_devices if not dev.get("is_system", False)]
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Linux-Scan fehlgeschlagen: %s", exc, exc_info=True)
+        linux_devices = []
+
+    try:
+        megaraid_devices = scan_megaraid_devices()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("MegaRAID-Scan fehlgeschlagen: %s", exc, exc_info=True)
+        megaraid_devices = []
+
+    return linux_devices + megaraid_devices
