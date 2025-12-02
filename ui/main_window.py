@@ -1,8 +1,9 @@
+import json
 import os
-from functools import partial
 from typing import List, Dict
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QAbstractItemView,
+    QHeaderView,
     QSplitter,
     QTextEdit,
     QGroupBox,
@@ -29,7 +31,6 @@ from modules import (
     badblocks_runner,
     nwipe_runner,
     raid_storcli,
-    raid_sas3ircu,
     shredos_boot,
 )
 from modules.config_manager import load_config, save_config
@@ -43,6 +44,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Festplatten-Löschstation 2025")
         self.resize(1300, 800)
+        self.setWindowIcon(self._icon("blancco_icon.svg"))
 
         self.config = load_config()
         self.debug_logger = setup_debug_logger(self.config)
@@ -86,6 +88,10 @@ class MainWindow(QMainWindow):
         ])
         self.device_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.device_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.device_table.setAlternatingRowColors(True)
+        header = self.device_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setStretchLastSection(True)
         left_layout.addWidget(self.device_table)
 
         btn_row = QHBoxLayout()
@@ -130,18 +136,18 @@ class MainWindow(QMainWindow):
         ])
 
         self._add_category(grid_layout, 0, 1, "Löschen / Secure Erase", [
-            ("Nwipe", nwipe_runner.run_nwipe),
+            ("Nwipe", nwipe_runner.run_nwipe, self._icon("blancco_icon.svg")),
             ("Secure Erase", self.run_secure_erase),
         ])
 
         self._add_category(grid_layout, 1, 0, "Externe Systeme", [
-            ("ShredOS Reboot", self.reboot_shredos),
+            ("ShredOS Reboot", self.reboot_shredos, self._icon("shredOS_icon.svg")),
         ])
 
         self._add_category(grid_layout, 1, 1, "RAID / Controller", [
             ("StorCLI Übersicht", self.show_storcli_overview),
             ("StorCLI Physical", self.show_storcli_physical),
-            ("SAS3IRCU Übersicht", self.show_sas3ircu),
+            ("MegaRAID: Alle Drives auf JBOD setzen", self.set_megaraid_jbod),
         ])
 
         self._add_category(grid_layout, 2, 0, "Zertifikate / Logs", [
@@ -154,12 +160,22 @@ class MainWindow(QMainWindow):
         self.status_logger = StatusLogger(self._append_status)
         self.refresh_devices()
 
+    def _icon(self, name: str) -> QIcon:
+        icon_path = os.path.join(os.path.dirname(__file__), "..", "img", name)
+        return QIcon(icon_path) if os.path.exists(icon_path) else QIcon()
+
     def _add_category(self, layout: QGridLayout, row: int, col: int, title: str, buttons):
         box = QGroupBox(title)
         v = QVBoxLayout()
-        for text, func in buttons:
+        for text, func, *rest in buttons:
+            icon = rest[0] if rest else None
             btn = QPushButton(text)
+            if icon:
+                btn.setIcon(icon)
             btn.clicked.connect(func)
+            if text.startswith("MegaRAID: Alle Drives"):
+                self.btn_jbod = btn
+                btn.setEnabled(self.expert_mode.enabled)
             v.addWidget(btn)
         box.setLayout(v)
         layout.addWidget(box, row, col)
@@ -177,6 +193,7 @@ class MainWindow(QMainWindow):
             for col, key in enumerate(["device", "path", "size", "model", "serial", "transport"]):
                 item = QTableWidgetItem(str(dev.get(key, "")))
                 self.device_table.setItem(row, col, item)
+        self.device_table.resizeColumnsToContents()
         self.status_logger.info(f"{len(devices)} Laufwerke geladen")
 
     def selected_devices(self) -> List[Dict]:
@@ -190,6 +207,7 @@ class MainWindow(QMainWindow):
                 "model": self.device_table.item(row, 3).text(),
                 "serial": self.device_table.item(row, 4).text(),
                 "transport": self.device_table.item(row, 5).text(),
+                "target": self.device_table.item(row, 1).text() or self.device_table.item(row, 0).text(),
             }
             result.append(row_data)
         return result
@@ -200,7 +218,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Keine Auswahl", "Bitte ein Laufwerk markieren.")
             return
         for dev in devices:
-            func(dev["device"])
+            target = dev.get("target") or dev["device"]
+            func(target)
 
     def run_secure_erase(self):
         devices = self.selected_devices()
@@ -208,7 +227,9 @@ class MainWindow(QMainWindow):
         if not planner.confirm_devices(self, devices):
             return
         for dev in devices:
-            commands = planner.build_commands(dev)
+            dev_for_cmd = dev.copy()
+            dev_for_cmd["device"] = dev.get("target") or dev["device"]
+            commands = planner.build_commands(dev_for_cmd)
             secure_erase.execute_commands(commands)
             self.status_logger.success(f"Secure Erase gestartet für {dev['device']}")
 
@@ -219,21 +240,30 @@ class MainWindow(QMainWindow):
             return
         preset = self.config.get("default_fio_preset", "quick-read")
         for dev in devices:
-            fio_runner.run_preset(dev["device"], preset)
-            self.status_logger.info(f"FIO gestartet ({preset}) auf {dev['device']}")
+            target = dev.get("target") or dev["device"]
+            fio_runner.run_preset(target, preset)
+            self.status_logger.info(f"FIO gestartet ({preset}) auf {dev['device']} ({target})")
 
     def run_badblocks(self):
         devices = self.selected_devices()
         if not devices:
             QMessageBox.information(self, "Keine Auswahl", "Bitte ein Laufwerk markieren.")
             return
-        mode = self.config.get("default_badblocks_mode", "read-only")
-        if mode == "destructive" and not self.expert_mode.enabled:
-            QMessageBox.warning(self, "Expertenmodus nötig", "Destruktiver Badblocks-Modus benötigt Expertenmodus.")
-            return
+        configured_mode = self.config.get("default_badblocks_mode", "read-only")
+        mode = configured_mode if self.expert_mode.enabled else "read-only"
+        if mode == "destructive":
+            reply = QMessageBox.question(
+                self,
+                "Badblocks",
+                "Destruktiver Badblocks-Modus ausführen? Alle Daten gehen verloren!",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
         for dev in devices:
-            badblocks_runner.run_badblocks(dev["device"], mode)
-            self.status_logger.info(f"Badblocks gestartet ({mode}) auf {dev['device']}")
+            target = dev.get("target") or dev["device"]
+            badblocks_runner.run_badblocks(target, mode)
+            self.status_logger.info(f"Badblocks gestartet ({mode}) auf {dev['device']} ({target})")
 
     def reboot_shredos(self):
         device = self.config.get("shredos_device", "/dev/sdb1")
@@ -249,15 +279,30 @@ class MainWindow(QMainWindow):
 
     def show_storcli_overview(self):
         data = raid_storcli.storcli_overview()
-        QMessageBox.information(self, "StorCLI Übersicht", str(data) or "Keine Daten")
+        self._show_json_dialog("StorCLI Übersicht", data)
 
     def show_storcli_physical(self):
-        data = raid_storcli.storcli_physical()
-        QMessageBox.information(self, "StorCLI Physical", str(data) or "Keine Daten")
+        controllers = raid_storcli.list_controllers_json()
+        merged = {}
+        for ctrl in controllers:
+            cid = ctrl.get("id")
+            merged[cid] = raid_storcli.list_physical_drives(cid)
+        self._show_json_dialog("StorCLI Physical", merged)
 
-    def show_sas3ircu(self):
-        output = raid_sas3ircu.sas3ircu_display()
-        QMessageBox.information(self, "SAS3IRCU", output or "Keine Daten")
+    def set_megaraid_jbod(self):
+        if not self.expert_mode.enabled:
+            QMessageBox.warning(self, "Expertenmodus", "Bitte Expertenmodus aktivieren, um JBOD zu setzen.")
+            return
+        success = raid_storcli.set_all_drives_to_jbod()
+        if success:
+            self.status_logger.success("Alle MegaRAID Drives in JBOD versetzt")
+        else:
+            self.status_logger.error("JBOD-Befehl fehlgeschlagen oder kein StorCLI")
+        self.refresh_devices()
+
+    def _show_json_dialog(self, title: str, data):
+        pretty = json.dumps(data, indent=2, ensure_ascii=False) if data else "Keine Daten"
+        QMessageBox.information(self, title, pretty)
 
     def launch_cert_gui(self):
         os.system(f"python3 certificates/export_certificates_gui.py &")
@@ -294,3 +339,5 @@ class MainWindow(QMainWindow):
         self.secure_planner.expert_enabled = enabled
         self.expert_label.setText(f"Expertenmodus: {'AN' if enabled else 'AUS'}")
         self.refresh_devices()
+        if hasattr(self, "btn_jbod"):
+            self.btn_jbod.setEnabled(enabled)

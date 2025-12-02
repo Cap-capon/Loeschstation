@@ -1,14 +1,17 @@
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
+    QHBoxLayout,
     QFormLayout,
     QLineEdit,
     QPushButton,
     QFileDialog,
     QCheckBox,
+    QComboBox,
 )
 
 from modules import config_manager
+from modules.fio_runner import PRESETS as FIO_PRESETS
 
 
 class SettingsWindow(QWidget):
@@ -33,12 +36,18 @@ class SettingsWindow(QWidget):
         form.addRow("Log-Verzeichnis", self._with_button(self.log_dir, btn_log))
 
         self.debug_log = QLineEdit(config.get("debug_log", ""))
-        form.addRow("Debug-Log-Datei", self.debug_log)
+        self.debug_enabled = QCheckBox("Debug-Log aktivieren")
+        self.debug_enabled.setChecked(bool(config.get("debug_logging_enabled", True)))
+        form.addRow("Debug-Log-Datei", self._with_button(self.debug_log, self.debug_enabled))
 
-        self.badblocks_default = QLineEdit(config.get("default_badblocks_mode", "read-only"))
+        self.badblocks_default = QComboBox()
+        self.badblocks_default.addItems(["read-only", "destructive"])
+        self.badblocks_default.setCurrentText(config.get("default_badblocks_mode", "read-only"))
         form.addRow("Standard Badblocks", self.badblocks_default)
 
-        self.fio_default = QLineEdit(config.get("default_fio_preset", "quick-read"))
+        self.fio_default = QComboBox()
+        self.fio_default.addItems(list(FIO_PRESETS.keys()))
+        self.fio_default.setCurrentText(config.get("default_fio_preset", "quick-read"))
         form.addRow("Standard FIO", self.fio_default)
 
         self.expert_pin = QLineEdit(config.get("expert_pin", "1969"))
@@ -59,11 +68,11 @@ class SettingsWindow(QWidget):
 
     def _with_button(self, line_edit, button):
         container = QWidget()
-        l = QVBoxLayout()
-        l.setContentsMargins(0, 0, 0, 0)
-        l.addWidget(line_edit)
-        l.addWidget(button)
-        container.setLayout(l)
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(line_edit)
+        layout.addWidget(button)
+        container.setLayout(layout)
         return container
 
     def _choose_folder(self, widget):
@@ -77,8 +86,9 @@ class SettingsWindow(QWidget):
                 "cert_dir": self.cert_dir.text(),
                 "log_dir": self.log_dir.text(),
                 "debug_log": self.debug_log.text(),
-                "default_badblocks_mode": self.badblocks_default.text(),
-                "default_fio_preset": self.fio_default.text(),
+                "debug_logging_enabled": self.debug_enabled.isChecked(),
+                "default_badblocks_mode": self.badblocks_default.currentText(),
+                "default_fio_preset": self.fio_default.currentText(),
                 "expert_pin": self.expert_pin.text(),
                 "show_system_disks": self.show_system.isChecked(),
                 "shredos_device": self.shredos_device.text(),

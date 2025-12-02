@@ -22,15 +22,18 @@ class StatusLogger:
 
 def setup_debug_logger(config: dict) -> logging.Logger:
     log_path = config.get("debug_log", config_manager.DEFAULT_CONFIG["debug_log"])
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-
     logger = logging.getLogger("loeschstation")
     if logger.handlers:
         return logger
 
     logger.setLevel(logging.DEBUG)
-    handler = RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=3)
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+
+    if config.get("debug_logging_enabled", True):
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        handler = RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=3)
+        formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    else:
+        logger.addHandler(logging.NullHandler())
     return logger

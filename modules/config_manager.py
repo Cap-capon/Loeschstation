@@ -7,6 +7,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "cert_dir": os.path.expanduser("~/loeschstation_logs/certificates"),
     "log_dir": os.path.expanduser("~/loeschstation_logs"),
     "debug_log": os.path.expanduser("~/.loeschstation/debug.log"),
+    "debug_logging_enabled": True,
     "default_badblocks_mode": "read-only",
     "default_fio_preset": "quick-read",
     "expert_pin": "1969",
