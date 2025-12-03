@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QLabel,
     QMessageBox,
+    QInputDialog,
 )
 
 from modules import config_manager
@@ -20,10 +21,11 @@ from modules.fio_runner import PRESETS as FIO_PRESETS
 
 
 class SettingsWindow(QWidget):
-    def __init__(self, config: dict, on_save):
+    def __init__(self, config: dict, on_save, expert_mode=None):
         super().__init__()
         self.config = config
         self.on_save = on_save
+        self.expert_mode = expert_mode
         self.setWindowTitle("Einstellungen")
 
         layout = QVBoxLayout()
@@ -81,6 +83,24 @@ class SettingsWindow(QWidget):
 
         self.shredos_device = QLineEdit(config.get("shredos_device", "/dev/sdb1"))
         form.addRow("ShredOS Gerät", self.shredos_device)
+
+        if self.expert_mode is not None:
+            expert_box = QVBoxLayout()
+            expert_row = QHBoxLayout()
+            self.expert_status = QLabel(self._expert_status_text())
+            expert_row.addWidget(self.expert_status)
+            expert_row.addStretch()
+            btn_toggle_expert = QPushButton("Expertenmodus umschalten")
+            btn_toggle_expert.clicked.connect(self._toggle_expert_mode)
+            expert_row.addWidget(btn_toggle_expert)
+            expert_box.addLayout(expert_row)
+            expert_hint = QLabel(
+                "Im Expertenmodus werden zusätzliche, potentiell destruktive "
+                "Funktionen freigeschaltet."
+            )
+            expert_hint.setWordWrap(True)
+            expert_box.addWidget(expert_hint)
+            layout.addLayout(expert_box)
 
         save_button = QPushButton("Speichern")
         save_button.clicked.connect(self.save)
@@ -145,3 +165,17 @@ class SettingsWindow(QWidget):
             QMessageBox.information(self, "Sudo", "Sudo-Authentifizierung erfolgreich.")
         else:
             QMessageBox.critical(self, "Sudo", "Sudo-Authentifizierung fehlgeschlagen.")
+
+    def _expert_status_text(self) -> str:
+        return f"Expertenmodus: {'AN' if self.expert_mode.enabled else 'AUS'}"
+
+    def _toggle_expert_mode(self):
+        if self.expert_mode is None:
+            return
+        pin, ok = QInputDialog.getText(self, "Expertenmodus", "PIN eingeben")
+        if not ok:
+            return
+        enabled = self.expert_mode.toggle(pin)
+        if not enabled:
+            QMessageBox.warning(self, "PIN", "Falscher PIN oder Expertenmodus deaktiviert")
+        self.expert_status.setText(self._expert_status_text())

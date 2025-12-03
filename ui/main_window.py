@@ -58,24 +58,24 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout()
         central.setLayout(main_layout)
 
-        header = QHBoxLayout()
-        self.expert_label = QLabel("Expertenmodus: AUS")
+        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setSpacing(8)
+
         self.status_label = QLabel("")
-        btn_toggle = QPushButton("Expertenmodus umschalten")
-        btn_toggle.clicked.connect(self.toggle_expert)
-        header.addWidget(self.expert_label)
-        header.addWidget(btn_toggle)
-        header.addStretch()
-        header.addWidget(self.status_label)
-        main_layout.addLayout(header)
+        status_row = QHBoxLayout()
+        status_row.addWidget(self.status_label)
+        status_row.addStretch()
+        main_layout.addLayout(status_row)
 
         self.main_splitter = QSplitter()
         self.main_splitter.setOrientation(Qt.Horizontal)
-        main_layout.addWidget(self.main_splitter)
+        main_layout.addWidget(self.main_splitter, 1)
 
         # Left side
         left = QWidget()
         left_layout = QVBoxLayout()
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
         left.setLayout(left_layout)
 
         self.device_table = QTableWidget()
@@ -136,6 +136,7 @@ class MainWindow(QMainWindow):
         right = QWidget()
         right_layout = QVBoxLayout()
         right_layout.setSpacing(12)
+        right_layout.setContentsMargins(0, 0, 0, 0)
         right.setLayout(right_layout)
 
         right_layout.addWidget(self._build_diagnostics_group())
@@ -553,7 +554,7 @@ class MainWindow(QMainWindow):
         save_config(self.config)
 
     def open_settings(self):
-        win = SettingsWindow(self.config.copy(), self.apply_config)
+        win = SettingsWindow(self.config.copy(), self.apply_config, self.expert_mode)
         win.show()
         win.activateWindow()
         win.raise_()
@@ -576,7 +577,6 @@ class MainWindow(QMainWindow):
 
     def _on_expert_change(self, enabled: bool):
         self.secure_planner.expert_enabled = enabled
-        self.expert_label.setText(f"Expertenmodus: {'AN' if enabled else 'AUS'}")
         self.refresh_devices()
         if hasattr(self, "btn_jbod"):
             self.btn_jbod.setEnabled(enabled)
