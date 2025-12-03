@@ -1,7 +1,10 @@
+import shlex
 import subprocess
 from typing import List, Dict
 
 from PySide6.QtWidgets import QMessageBox
+
+from modules import config_manager
 
 
 class SecureErasePlanner:
@@ -15,12 +18,12 @@ class SecureErasePlanner:
 
         if "nvme" in transport or device.startswith("/dev/nvme"):
             ses = "1" if self.expert_enabled else "0"
-            commands.append(["sudo", "nvme", "format", device, f"--ses={ses}"])
+            commands.append(["nvme", "format", device, f"--ses={ses}"])
         else:
-            commands.append(["sudo", "hdparm", "--user-master", "u", "--security-set-pass", "NULL", device])
-            erase_cmd = ["sudo", "hdparm", "--security-erase"]
+            commands.append(["hdparm", "--user-master", "u", "--security-set-pass", "NULL", device])
+            erase_cmd = ["hdparm", "--security-erase"]
             if self.expert_enabled:
-                erase_cmd = ["sudo", "hdparm", "--security-erase-enhanced"]
+                erase_cmd = ["hdparm", "--security-erase-enhanced"]
             erase_cmd.extend(["NULL", device])
             commands.append(erase_cmd)
         return commands
@@ -36,8 +39,22 @@ class SecureErasePlanner:
 
 
 def execute_commands(commands: List[List[str]]) -> None:
+    pw = config_manager.get_sudo_password()
+    if not pw:
+        raise RuntimeError("sudo-Passwort nicht konfiguriert")
+
+    pw_safe = shlex.quote(pw)
     for cmd in commands:
         try:
-            subprocess.Popen(cmd)
+            joined = " ".join(shlex.quote(part) for part in cmd)
+            subprocess.Popen(
+                [
+                    "gnome-terminal",
+                    "--",
+                    "bash",
+                    "-lc",
+                    f"echo {pw_safe} | sudo -S {joined}; exec bash",
+                ]
+            )
         except FileNotFoundError:
             continue

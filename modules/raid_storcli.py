@@ -2,26 +2,43 @@ import json
 import subprocess
 from typing import Dict, List, Optional
 
+from modules import config_manager
+
 
 def _run_storcli_json(args: List[str]) -> Dict:
     """
-    führt ['sudo', 'storcli'] + args aus und gibt geparstes JSON zurück.
-    Bei Fehlern Exception mit sinnvoller Fehlermeldung.
+    Führt 'sudo -S storcli <args>' mit dem in den Settings
+    hinterlegten Sudo-Passwort aus und liefert geparstes JSON zurück.
     """
 
-    cmd = ["sudo", "storcli", *args]
+    pw = config_manager.get_sudo_password()
+    if not pw:
+        raise RuntimeError("sudo-Passwort nicht konfiguriert")
+
+    cmd = ["sudo", "-S", "storcli", *args]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-    except FileNotFoundError as exc:
-        raise RuntimeError("StorCLI nicht gefunden") from exc
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"StorCLI fehlgeschlagen ({' '.join(cmd)}): {proc.stderr.strip() or proc.stdout.strip()}"
+        proc = subprocess.run(
+            cmd,
+            input=pw + "\n",
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
+    except FileNotFoundError as exc:
+        raise RuntimeError("storcli-Binary nicht gefunden") from exc
+
+    if proc.returncode != 0:
+        stderr = (proc.stderr or proc.stdout or "").strip()
+        if "Authentication failed" in stderr:
+            raise RuntimeError("sudo-Authentifizierung fehlgeschlagen")
+        if "command not found" in stderr or "No such file" in stderr:
+            raise RuntimeError("storcli-Binary nicht gefunden")
+        raise RuntimeError(f"StorCLI fehlgeschlagen: {stderr}")
+
     try:
-        return json.loads(proc.stdout)
+        return json.loads(proc.stdout or "{}")
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"StorCLI lieferte kein gültiges JSON ({' '.join(cmd)}): {exc}") from exc
+        raise RuntimeError(f"StorCLI lieferte kein gültiges JSON: {exc}") from exc
 
 
 def storcli_overview() -> Dict:
