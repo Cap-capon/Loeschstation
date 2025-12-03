@@ -8,7 +8,7 @@ from modules import raid_storcli
 logger = logging.getLogger("loeschstation")
 
 _last_warning: str = ""
-SYSTEM_MOUNTPOINTS = ("/", "/boot", "/boot/efi", "/usr", "/var")
+SYSTEM_MOUNTPOINTS = ("/", "/boot", "/boot/efi", "/usr", "/var", "/home")
 
 
 def _set_warning(message: str) -> None:
@@ -46,12 +46,27 @@ def _collect_mountpoints(dev: Dict) -> Set[str]:
     return points
 
 
-def _is_system_disk(dev: Dict) -> bool:
-    mountpoints = _collect_mountpoints(dev)
-    return any(mp in SYSTEM_MOUNTPOINTS for mp in mountpoints)
+def _is_system_mountpoint(mountpoints: Set[str]) -> bool:
+    for mp in mountpoints:
+        for system_mp in SYSTEM_MOUNTPOINTS:
+            if mp == system_mp or mp.startswith(system_mp.rstrip("/") + "/"):
+                return True
+    return False
 
 
-def scan_lsblk_disks() -> List[Dict]:
+def _is_internal_mainboard_disk(dev: Dict, transport: str) -> bool:
+    removable = str(dev.get("rm", "")).strip()
+    hotplug = dev.get("hotplug")
+    is_usb = transport == "usb"
+    return (
+        transport in ("sata", "ata", "nvme")
+        and removable == "0"
+        and hotplug is not True
+        and not is_usb
+    )
+
+
+def scan_linux_disks() -> List[Dict]:
     """
     Nutzt 'lsblk -O -J', filtert TYPE=="disk" und markiert Systemlaufwerke.
     """
@@ -62,6 +77,16 @@ def scan_lsblk_disks() -> List[Dict]:
         if dev.get("type") != "disk":
             continue
         path = dev.get("path") or f"/dev/{dev.get('name', '')}"
+        transport = str(dev.get("tran") or dev.get("subsystems") or "").lower()
+        mountpoints = _collect_mountpoints(dev)
+        is_system = _is_system_mountpoint(mountpoints)
+
+        # Onboard-SATA/NVMe immer als Systemplatte behandeln (hartes Verbot)
+        if transport in ("sata", "ata"):
+            is_system = True
+        elif _is_internal_mainboard_disk(dev, transport):
+            is_system = True
+
         devices.append(
             {
                 "device": dev.get("name", path),
@@ -69,9 +94,10 @@ def scan_lsblk_disks() -> List[Dict]:
                 "size": dev.get("size", ""),
                 "model": dev.get("model", ""),
                 "serial": dev.get("serial", ""),
-                "transport": dev.get("tran", dev.get("subsystems", "")),
-                "mountpoints": sorted(list(_collect_mountpoints(dev))),
-                "is_system": _is_system_disk(dev),
+                "transport": transport,
+                "mountpoints": sorted(list(mountpoints)),
+                "is_system": is_system,
+                "erase_allowed": False,
             }
         )
     return devices
@@ -116,6 +142,7 @@ def scan_megaraid_devices() -> List[Dict]:
                     "serial": "",
                     "transport": f"storcli:{pd.get('intf', '')}",
                     "is_system": False,
+                    "erase_allowed": True,
                 }
             )
     if not had_warning:
@@ -135,12 +162,12 @@ def _handle_storcli_error(exc: Exception, context: str) -> None:
 
 def scan_all_devices(show_system_disks: bool) -> List[Dict]:
     """
-    Ruft scan_lsblk_disks() und scan_megaraid_devices() auf, filtert Systemdisks
+    Ruft scan_linux_disks() und scan_megaraid_devices() auf, filtert Systemdisks
     je nach Einstellung und liefert die kombinierte Liste.
     """
 
     try:
-        linux_devices = scan_lsblk_disks()
+        linux_devices = scan_linux_disks()
         if not show_system_disks:
             linux_devices = [dev for dev in linux_devices if not dev.get("is_system", False)]
     except Exception as exc:  # pragma: no cover - defensive

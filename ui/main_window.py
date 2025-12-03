@@ -156,6 +156,8 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # pragma: no cover - defensive
             self._append_status(f"StorCLI JBOD-Fehler: {exc}")
         self._reload_devices()
+        self.device_table.selectionModel().selectionChanged.connect(self._update_action_buttons)
+        self._update_action_buttons()
 
     def _load_icon(self, path: str) -> QIcon:
         return QIcon(path) if path and os.path.exists(path) else QIcon()
@@ -191,16 +193,18 @@ class MainWindow(QMainWindow):
             self._create_tile_button("Speicheranalyse", smart_tools.open_baobab, icons.ICON_PARTITION),
             self._create_tile_button("SMART Scan (CLI)", self.run_smartctl_cli, icons.ICON_SMARTCLI),
             self._create_tile_button("NVMe Info", self.run_nvme_info, icons.ICON_NVMEINFO),
-            self._create_tile_button("FIO (Preset)", self.run_fio, icons.ICON_FIO),
-            self._create_tile_button("Badblocks", self.run_badblocks, icons.ICON_BADBLOCKS),
         ]
+        self.btn_fio = self._create_tile_button("FIO (Preset)", self.run_fio, icons.ICON_FIO)
+        self.btn_badblocks = self._create_tile_button("Badblocks", self.run_badblocks, icons.ICON_BADBLOCKS)
+        buttons.extend([self.btn_fio, self.btn_badblocks])
         return self._build_grid_box("Diagnose & Tests", buttons)
 
     def _build_wipe_group(self) -> QGroupBox:
-        buttons = [
-            self._create_tile_button("Nwipe", self.run_nwipe, icons.ICON_NWIPE),
-            self._create_tile_button("Secure Erase", self.run_secure_erase, icons.ICON_SECURE_ERASE),
-        ]
+        self.btn_nwipe = self._create_tile_button("Nwipe", self.run_nwipe, icons.ICON_NWIPE)
+        self.btn_secure = self._create_tile_button(
+            "Secure Erase", self.run_secure_erase, icons.ICON_SECURE_ERASE
+        )
+        buttons = [self.btn_nwipe, self.btn_secure]
         return self._build_grid_box("Löschen / Secure Erase", buttons)
 
     def _build_external_group(self) -> QGroupBox:
@@ -235,12 +239,21 @@ class MainWindow(QMainWindow):
 
     def _reload_devices(self):
         show_system = self.config.get("show_system_disks", False) or self.expert_mode.enabled
-        devices = device_scan.scan_all_devices(show_system)
+        scanned = device_scan.scan_all_devices(show_system)
+        devices: List[Dict] = []
+        for dev in scanned:
+            normalized = dev.copy()
+            normalized["target"] = dev.get("path") or dev.get("device")
+            devices.append(normalized)
+
+        self.devices = devices
         self.device_table.setRowCount(0)
         for row, dev in enumerate(devices):
             self.device_table.insertRow(row)
             for col, key in enumerate(["device", "path", "size", "model", "serial", "transport"]):
                 item = QTableWidgetItem(str(dev.get(key, "")))
+                if col == 0:
+                    item.setData(Qt.UserRole, dev)
                 self.device_table.setItem(row, col, item)
         widths = self.config.get("table_column_widths") or []
         if widths:
@@ -253,6 +266,7 @@ class MainWindow(QMainWindow):
         self.device_table.sortItems(header.sortIndicatorSection(), header.sortIndicatorOrder())
         self.status_label.setText(device_scan.get_last_warning())
         self.status_logger.info(f"{len(devices)} Laufwerke geladen")
+        self._update_action_buttons()
 
     def refresh_devices(self):
         self._reload_devices()
@@ -261,16 +275,10 @@ class MainWindow(QMainWindow):
         result = []
         for idx in self.device_table.selectionModel().selectedRows():
             row = idx.row()
-            row_data = {
-                "device": self.device_table.item(row, 0).text(),
-                "path": self.device_table.item(row, 1).text(),
-                "size": self.device_table.item(row, 2).text(),
-                "model": self.device_table.item(row, 3).text(),
-                "serial": self.device_table.item(row, 4).text(),
-                "transport": self.device_table.item(row, 5).text(),
-                "target": self.device_table.item(row, 1).text() or self.device_table.item(row, 0).text(),
-            }
-            result.append(row_data)
+            item = self.device_table.item(row, 0)
+            dev = item.data(Qt.UserRole) if item else None
+            if dev:
+                result.append(dev)
         return result
 
     def _ensure_devices_selected(self) -> List[Dict] | None:
@@ -283,6 +291,45 @@ class MainWindow(QMainWindow):
     def _handle_runner_error(self, exc: Exception) -> None:
         QMessageBox.critical(self, "Fehler", str(exc))
         self.status_logger.error(str(exc))
+
+    def _filter_erasable(self, devices: List[Dict]) -> List[Dict] | None:
+        selected_for_erase = [d for d in devices if d.get("erase_allowed")]
+        forbidden = [d for d in devices if not d.get("erase_allowed")]
+
+        if not selected_for_erase:
+            QMessageBox.information(
+                self,
+                "Keine löschbaren Laufwerke",
+                "Keine löschbaren Laufwerke ausgewählt. Nur Controller-Platten können gelöscht werden.",
+            )
+            return None
+
+        if forbidden:
+            QMessageBox.warning(
+                self,
+                "Sicherheitswarnung",
+                "Einige ausgewählte Laufwerke sind System- oder Onboard-Platten und werden aus Sicherheitsgründen ignoriert.",
+            )
+        return selected_for_erase
+
+    def _update_action_buttons(self) -> None:
+        has_erasable = False
+        for idx in self.device_table.selectionModel().selectedRows():
+            item = self.device_table.item(idx.row(), 0)
+            dev = item.data(Qt.UserRole) if item else None
+            if dev and dev.get("erase_allowed"):
+                has_erasable = True
+                break
+
+        for btn in [
+            getattr(self, "btn_nwipe", None),
+            getattr(self, "btn_secure", None),
+            getattr(self, "btn_fio", None),
+            getattr(self, "btn_badblocks", None),
+        ]:
+            if btn is None:
+                continue
+            btn.setEnabled(has_erasable)
 
     def _storcli_warning_text(self, exc: Exception) -> str:
         message = str(exc)
@@ -322,6 +369,9 @@ class MainWindow(QMainWindow):
         devices = self._ensure_devices_selected()
         if not devices:
             return
+        devices = self._filter_erasable(devices)
+        if not devices:
+            return
         planner = secure_erase.SecureErasePlanner(self.expert_mode.enabled)
         if not planner.confirm_devices(self, devices):
             return
@@ -337,6 +387,9 @@ class MainWindow(QMainWindow):
 
     def run_fio(self):
         devices = self._ensure_devices_selected()
+        if not devices:
+            return
+        devices = self._filter_erasable(devices)
         if not devices:
             return
         preset = self.config.get("default_fio_preset", "quick-read")
@@ -387,6 +440,9 @@ class MainWindow(QMainWindow):
             )
             if reply != QMessageBox.Yes:
                 return
+            devices = self._filter_erasable(devices)
+            if not devices:
+                return
         try:
             for dev in devices:
                 target = dev.get("target") or dev["device"]
@@ -399,6 +455,9 @@ class MainWindow(QMainWindow):
         devices = self._ensure_devices_selected()
         if not devices:
             return
+        devices = self._filter_erasable(devices)
+        if not devices:
+            return
         targets = [dev.get("target") or dev["device"] for dev in devices]
         try:
             nwipe_runner.run_nwipe(targets)
@@ -408,6 +467,15 @@ class MainWindow(QMainWindow):
 
     def reboot_shredos(self):
         device = self.config.get("shredos_device", "/dev/sdb1")
+        current_devices = getattr(self, "devices", [])
+        target_info = next((d for d in current_devices if d.get("path") == device or d.get("device") == device), None)
+        if target_info and not target_info.get("erase_allowed"):
+            QMessageBox.information(
+                self,
+                "Keine löschbaren Laufwerke",
+                "Das ausgewählte ShredOS-Ziel ist als Systemplatte geschützt und kann nicht verwendet werden.",
+            )
+            return
         reply = QMessageBox.question(
             self,
             "ShredOS",
@@ -524,6 +592,7 @@ class MainWindow(QMainWindow):
     def _update_expert_visibility(self):
         if hasattr(self, "raid_group"):
             self.raid_group.setVisible(self.expert_mode.enabled)
+        self._update_action_buttons()
 
     def closeEvent(self, event):
         self._persist_ui_state()

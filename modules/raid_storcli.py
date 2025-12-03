@@ -29,7 +29,11 @@ def _run_storcli_json(args: List[str]) -> Dict:
 
     if proc.returncode != 0:
         stderr = (proc.stderr or proc.stdout or "").strip()
-        if "Authentication failed" in stderr:
+        if (
+            "Authentication failed" in stderr
+            or "incorrect password attempts" in stderr
+            or ("sudo:" in stderr and "password" in stderr.lower())
+        ):
             raise RuntimeError("sudo-Authentifizierung fehlgeschlagen")
         if "command not found" in stderr or "No such file" in stderr:
             raise RuntimeError("storcli-Binary nicht gefunden")
