@@ -166,18 +166,10 @@ def scan_all_devices(show_system_disks: bool) -> List[Dict]:
     je nach Einstellung und liefert die kombinierte Liste.
     """
 
-    try:
-        linux_devices = scan_linux_disks()
-        if not show_system_disks:
-            linux_devices = [dev for dev in linux_devices if not dev.get("is_system", False)]
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("Linux-Scan fehlgeschlagen: %s", exc, exc_info=True)
-        linux_devices = []
+    linux_devices = scan_linux_disks()
+    megaraid_devices = scan_megaraid_devices()
 
-    try:
-        megaraid_devices = scan_megaraid_devices()
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("MegaRAID-Scan fehlgeschlagen: %s", exc, exc_info=True)
-        megaraid_devices = []
+    if not show_system_disks:
+        linux_devices = [dev for dev in linux_devices if not dev.get("is_system", False)]
 
     return linux_devices + megaraid_devices

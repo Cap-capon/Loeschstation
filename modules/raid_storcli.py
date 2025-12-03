@@ -5,44 +5,34 @@ from typing import Dict, List, Optional
 from modules import config_manager
 
 
+STORCLI_BIN = "storcli"
+
+
 def _run_storcli_json(args: List[str]) -> Dict:
-    """
-    Führt 'sudo -S storcli <args>' mit dem in den Settings
-    hinterlegten Sudo-Passwort aus und liefert geparstes JSON zurück.
-    """
+    """Führt StorCLI mit sudo aus und liefert das JSON-Ergebnis."""
 
     pw = config_manager.get_sudo_password()
     if not pw:
         raise RuntimeError("sudo-Passwort nicht konfiguriert")
 
-    cmd = ["sudo", "-S", "storcli", *args]
-    try:
-        proc = subprocess.run(
-            cmd,
-            input=pw + "\n",
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError("storcli-Binary nicht gefunden") from exc
+    cmd = ["sudo", "-S", STORCLI_BIN] + list(args)
+    proc = subprocess.run(
+        cmd,
+        input=pw + "\n",
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
 
     if proc.returncode != 0:
         stderr = (proc.stderr or proc.stdout or "").strip()
-        if (
-            "Authentication failed" in stderr
-            or "incorrect password attempts" in stderr
-            or ("sudo:" in stderr and "password" in stderr.lower())
-        ):
+        if "Authentication failed" in stderr:
             raise RuntimeError("sudo-Authentifizierung fehlgeschlagen")
         if "command not found" in stderr or "No such file" in stderr:
             raise RuntimeError("storcli-Binary nicht gefunden")
         raise RuntimeError(f"StorCLI fehlgeschlagen: {stderr}")
 
-    try:
-        return json.loads(proc.stdout or "{}")
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"StorCLI lieferte kein gültiges JSON: {exc}") from exc
+    return json.loads(proc.stdout or "{}")
 
 
 def storcli_overview() -> Dict:
@@ -55,22 +45,16 @@ def list_controllers() -> List[Dict]:
     und liefert eine Liste mit Controller-Infos zurück.
     """
 
-    data = storcli_overview()
+    data = _run_storcli_json(["show", "J"])
     controllers: List[Dict] = []
     for ctrl in data.get("Controllers", []):
-        status = ctrl.get("Command Status", {})
-        if status.get("Status") != "Success":
-            continue
         resp = ctrl.get("Response Data", {}) or {}
         basics = resp.get("Basics", {}) or {}
-        cid = basics.get("Controller")
-        if cid is None:
-            continue
         controllers.append(
             {
-                "id": int(cid),
-                "model": str(basics.get("Model", "")),
-                "serial": str(basics.get("Serial Number", "")),
+                "id": basics.get("Controller", 0),
+                "model": basics.get("Model", ""),
+                "serial": basics.get("Serial Number", ""),
             }
         )
     return controllers
@@ -86,14 +70,18 @@ def list_physical_drives(controller_id: int) -> List[Dict]:
     resp = (controllers[0] or {}).get("Response Data", {}) or {}
     pd_list = resp.get("PD LIST", []) or []
     for entry in pd_list:
-        eid, slot = _parse_eid_slot(entry)
         eid_slt = entry.get("EID:Slt") or entry.get("EID/Slt") or ""
+        eid = slot = None
+        if ":" in eid_slt:
+            eid_str, slot_str = eid_slt.split(":", 1)
+            eid = _safe_int(eid_str)
+            slot = _safe_int(slot_str)
         drives.append(
             {
                 "controller": controller_id,
+                "eid_slt": eid_slt,
                 "eid": eid,
                 "slot": slot,
-                "eid_slt": eid_slt,
                 "size": entry.get("Size", ""),
                 "intf": entry.get("Intf", ""),
                 "med": entry.get("Med", ""),
@@ -152,11 +140,9 @@ def set_all_drives_to_jbod(controller_id: Optional[int] = None) -> None:
     Exceptions werden vom Aufrufer gefangen.
     """
 
-    controllers = list_controllers()
+    controllers = list_controllers() if controller_id is None else [{"id": controller_id}]
     for ctrl in controllers:
         cid = ctrl.get("id")
         if cid is None:
-            continue
-        if controller_id is not None and cid != controller_id:
             continue
         _run_storcli_json([f"/c{cid}", "/eall", "/sall", "set", "jbod"])

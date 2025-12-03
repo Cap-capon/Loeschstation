@@ -239,7 +239,7 @@ class MainWindow(QMainWindow):
 
     def _reload_devices(self):
         show_system = self.config.get("show_system_disks", False) or self.expert_mode.enabled
-        scanned = device_scan.scan_all_devices(show_system)
+        scanned = device_scan.scan_all_devices(show_system_disks=show_system)
         devices: List[Dict] = []
         for dev in scanned:
             normalized = dev.copy()
