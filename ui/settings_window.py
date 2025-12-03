@@ -1,3 +1,6 @@
+import shlex
+import subprocess
+
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -8,6 +11,8 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QCheckBox,
     QComboBox,
+    QLabel,
+    QMessageBox,
 )
 
 from modules import config_manager
@@ -39,6 +44,23 @@ class SettingsWindow(QWidget):
         self.debug_enabled = QCheckBox("Debug-Log aktivieren")
         self.debug_enabled.setChecked(bool(config.get("debug_logging_enabled", True)))
         form.addRow("Debug-Log-Datei", self._with_button(self.debug_log, self.debug_enabled))
+
+        self.sudo_password = QLineEdit()
+        self.sudo_password.setEchoMode(QLineEdit.Password)
+        self.sudo_password.setPlaceholderText("********")
+        btn_test_sudo = QPushButton("Sudo testen")
+        btn_test_sudo.clicked.connect(self._test_sudo)
+        form.addRow(
+            "Sudo-Passwort (für StorCLI, Nwipe, Badblocks, Secure Erase, …)",
+            self._with_button(self.sudo_password, btn_test_sudo),
+        )
+
+        hint = QLabel(
+            "Das Passwort wird lokal gespeichert und nur zur nicht-interaktiven "
+            "Ausführung von sudo-Kommandos verwendet."
+        )
+        hint.setWordWrap(True)
+        form.addRow(hint)
 
         self.badblocks_default = QComboBox()
         self.badblocks_default.addItems(["read-only", "destructive"])
@@ -94,6 +116,32 @@ class SettingsWindow(QWidget):
                 "shredos_device": self.shredos_device.text(),
             }
         )
+        new_pw = self.sudo_password.text()
+        if new_pw:
+            config_manager.set_sudo_password(new_pw)
+            self.config["sudo_password"] = new_pw
         config_manager.save_config(self.config)
         self.on_save(self.config)
         self.close()
+
+    def _test_sudo(self):
+        pw = self.sudo_password.text() or config_manager.get_sudo_password()
+        if not pw:
+            QMessageBox.warning(self, "Sudo", "Bitte zuerst ein Sudo-Passwort eintragen.")
+            return
+        pw_safe = shlex.quote(pw)
+        try:
+            result = subprocess.run(
+                ["bash", "-lc", f"echo {pw_safe} | sudo -S true"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except subprocess.SubprocessError:
+            QMessageBox.critical(self, "Sudo", "Sudo-Test fehlgeschlagen.")
+            return
+
+        if result.returncode == 0:
+            QMessageBox.information(self, "Sudo", "Sudo-Authentifizierung erfolgreich.")
+        else:
+            QMessageBox.critical(self, "Sudo", "Sudo-Authentifizierung fehlgeschlagen.")

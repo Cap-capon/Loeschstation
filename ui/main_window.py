@@ -2,7 +2,7 @@ import json
 import os
 from typing import List, Dict
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QByteArray
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -33,9 +33,11 @@ from modules import (
     raid_storcli,
     shredos_boot,
 )
+from modules import config_manager
 from modules.config_manager import load_config, save_config
 from modules.logs import StatusLogger, setup_debug_logger
 from modules.expert_mode import ExpertMode
+from modules import icons
 from ui.settings_window import SettingsWindow
 
 
@@ -44,7 +46,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Festplatten-Löschstation 2025")
         self.resize(1300, 800)
-        self.setWindowIcon(self._icon("blancco_icon.svg"))
+        self.setWindowIcon(self._load_icon(icons.ICON_NWIPE))
 
         self.config = load_config()
         self.debug_logger = setup_debug_logger(self.config)
@@ -67,9 +69,9 @@ class MainWindow(QMainWindow):
         header.addWidget(self.status_label)
         main_layout.addLayout(header)
 
-        splitter = QSplitter()
-        splitter.setOrientation(Qt.Horizontal)
-        main_layout.addWidget(splitter)
+        self.main_splitter = QSplitter()
+        self.main_splitter.setOrientation(Qt.Horizontal)
+        main_layout.addWidget(self.main_splitter)
 
         # Left side
         left = QWidget()
@@ -89,10 +91,10 @@ class MainWindow(QMainWindow):
         self.device_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.device_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.device_table.setAlternatingRowColors(True)
+        self.device_table.setSortingEnabled(True)
         header = self.device_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
         header.setStretchLastSection(True)
-        left_layout.addWidget(self.device_table)
 
         btn_row = QHBoxLayout()
         self.btn_refresh = QPushButton("Aktualisieren")
@@ -111,51 +113,42 @@ class MainWindow(QMainWindow):
         self.btn_settings.clicked.connect(self.open_settings)
         btn_row.addWidget(self.btn_settings)
 
-        left_layout.addLayout(btn_row)
+        table_container = QWidget()
+        table_layout = QVBoxLayout()
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        table_layout.addWidget(self.device_table)
+        table_layout.addLayout(btn_row)
+        table_container.setLayout(table_layout)
 
         self.status_log = QTextEdit()
         self.status_log.setReadOnly(True)
-        left_layout.addWidget(self.status_log)
 
-        splitter.addWidget(left)
+        self.left_splitter = QSplitter(Qt.Vertical)
+        self.left_splitter.addWidget(table_container)
+        self.left_splitter.addWidget(self.status_log)
+        self.left_splitter.setSizes([500, 250])
+
+        left_layout.addWidget(self.left_splitter)
+
+        self.main_splitter.addWidget(left)
 
         # Right side dashboard
         right = QWidget()
-        grid_layout = QGridLayout()
-        right.setLayout(grid_layout)
+        right_layout = QVBoxLayout()
+        right_layout.setSpacing(12)
+        right.setLayout(right_layout)
 
-        self._add_category(grid_layout, 0, 0, "Diagnose & Tests", [
-            ("GSmartControl", smart_tools.open_gsmartcontrol),
-            ("GNOME Disks", smart_tools.open_gnome_disks),
-            ("Partition Manager", smart_tools.open_partition_manager),
-            ("Speicheranalyse", smart_tools.open_baobab),
-            ("SMART Scan (CLI)", lambda: self._with_device(smart_tools.run_smartctl)),
-            ("NVMe Info", lambda: self._with_device(smart_tools.run_nvme_smart)),
-            ("FIO (Preset)", self.run_fio),
-            ("Badblocks", self.run_badblocks),
-        ])
+        right_layout.addWidget(self._build_diagnostics_group())
+        right_layout.addWidget(self._build_wipe_group())
+        right_layout.addWidget(self._build_external_group())
+        self.raid_group = self._build_raid_group()
+        right_layout.addWidget(self.raid_group)
+        right_layout.addStretch()
 
-        self._add_category(grid_layout, 0, 1, "Löschen / Secure Erase", [
-            ("Nwipe", nwipe_runner.run_nwipe, self._icon("blancco_icon.svg")),
-            ("Secure Erase", self.run_secure_erase),
-        ])
+        self.main_splitter.addWidget(right)
 
-        self._add_category(grid_layout, 1, 0, "Externe Systeme", [
-            ("ShredOS Reboot", self.reboot_shredos, self._icon("shredOS_icon.svg")),
-        ])
-
-        self._add_category(grid_layout, 1, 1, "RAID / Controller", [
-            ("StorCLI Übersicht", self.show_storcli_overview),
-            ("StorCLI Physical", self.show_storcli_physical),
-            ("MegaRAID: Alle Drives auf JBOD setzen", self.set_megaraid_jbod),
-        ])
-
-        self._add_category(grid_layout, 2, 0, "Zertifikate / Logs", [
-            ("Zertifikat GUI", self.launch_cert_gui),
-            ("Log-Ordner", self.open_log_folder),
-        ])
-
-        splitter.addWidget(right)
+        self._restore_window_state()
+        self._update_expert_visibility()
 
         self.status_logger = StatusLogger(self._append_status)
         try:
@@ -164,25 +157,74 @@ class MainWindow(QMainWindow):
             self._append_status(f"StorCLI JBOD-Fehler: {exc}")
         self._reload_devices()
 
-    def _icon(self, name: str) -> QIcon:
-        icon_path = os.path.join(os.path.dirname(__file__), "..", "img", name)
-        return QIcon(icon_path) if os.path.exists(icon_path) else QIcon()
+    def _load_icon(self, path: str) -> QIcon:
+        return QIcon(path) if path and os.path.exists(path) else QIcon()
 
-    def _add_category(self, layout: QGridLayout, row: int, col: int, title: str, buttons):
+    def _create_tile_button(self, text: str, func, icon_path: str | None = None) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setMinimumHeight(60)
+        btn.setIcon(self._load_icon(icon_path or ""))
+        btn.setStyleSheet(
+            "padding: 10px; border-radius: 4px; font-weight: 500;"
+            "border: 1px solid #c0c0c0;"
+        )
+        btn.clicked.connect(func)
+        return btn
+
+    def _build_grid_box(self, title: str, buttons: List[QPushButton]) -> QGroupBox:
         box = QGroupBox(title)
-        v = QVBoxLayout()
-        for text, func, *rest in buttons:
-            icon = rest[0] if rest else None
-            btn = QPushButton(text)
-            if icon:
-                btn.setIcon(icon)
-            btn.clicked.connect(func)
-            if text.startswith("MegaRAID: Alle Drives"):
-                self.btn_jbod = btn
-                btn.setEnabled(self.expert_mode.enabled)
-            v.addWidget(btn)
-        box.setLayout(v)
-        layout.addWidget(box, row, col)
+        grid = QGridLayout()
+        grid.setSpacing(8)
+        columns = 4
+        for idx, btn in enumerate(buttons):
+            row = idx // columns
+            col = idx % columns
+            grid.addWidget(btn, row, col)
+        box.setLayout(grid)
+        return box
+
+    def _build_diagnostics_group(self) -> QGroupBox:
+        buttons = [
+            self._create_tile_button("GSmartControl", smart_tools.open_gsmartcontrol, icons.ICON_GSMART),
+            self._create_tile_button("GNOME Disks", smart_tools.open_gnome_disks, icons.ICON_GNOME_DISKS),
+            self._create_tile_button("Partition Manager", smart_tools.open_partition_manager, icons.ICON_PARTITION),
+            self._create_tile_button("Speicheranalyse", smart_tools.open_baobab, icons.ICON_PARTITION),
+            self._create_tile_button("SMART Scan (CLI)", self.run_smartctl_cli, icons.ICON_SMARTCLI),
+            self._create_tile_button("NVMe Info", self.run_nvme_info, icons.ICON_NVMEINFO),
+            self._create_tile_button("FIO (Preset)", self.run_fio, icons.ICON_FIO),
+            self._create_tile_button("Badblocks", self.run_badblocks, icons.ICON_BADBLOCKS),
+        ]
+        return self._build_grid_box("Diagnose & Tests", buttons)
+
+    def _build_wipe_group(self) -> QGroupBox:
+        buttons = [
+            self._create_tile_button("Nwipe", self.run_nwipe, icons.ICON_NWIPE),
+            self._create_tile_button("Secure Erase", self.run_secure_erase, icons.ICON_SECURE_ERASE),
+        ]
+        return self._build_grid_box("Löschen / Secure Erase", buttons)
+
+    def _build_external_group(self) -> QGroupBox:
+        buttons = [
+            self._create_tile_button("ShredOS Reboot", self.reboot_shredos, icons.ICON_SHREDOS),
+            self._create_tile_button("BlanccoOS", self._placeholder_blancco, icons.ICON_BLANCCO_OS),
+        ]
+        buttons[-1].setEnabled(False)
+        return self._build_grid_box("Externe Systeme", buttons)
+
+    def _build_raid_group(self) -> QGroupBox:
+        buttons = [
+            self._create_tile_button("StorCLI Übersicht", self.show_storcli_overview, icons.ICON_GSMART),
+            self._create_tile_button("StorCLI Physical", self.show_storcli_physical, icons.ICON_GSMART),
+            self._create_tile_button(
+                "MegaRAID: Alle Drives auf JBOD setzen",
+                self.set_megaraid_jbod,
+                icons.ICON_GSMART,
+            ),
+        ]
+        self.btn_jbod = buttons[-1]
+        self.btn_jbod.setEnabled(self.expert_mode.enabled)
+        box = self._build_grid_box("RAID / Controller", buttons)
+        return box
 
     def _append_status(self, text: str) -> None:
         self.status_log.append(text)
@@ -200,7 +242,15 @@ class MainWindow(QMainWindow):
             for col, key in enumerate(["device", "path", "size", "model", "serial", "transport"]):
                 item = QTableWidgetItem(str(dev.get(key, "")))
                 self.device_table.setItem(row, col, item)
-        self.device_table.resizeColumnsToContents()
+        widths = self.config.get("table_column_widths") or []
+        if widths:
+            for idx, width in enumerate(widths):
+                if idx < self.device_table.columnCount() and width:
+                    self.device_table.setColumnWidth(idx, width)
+        else:
+            self.device_table.resizeColumnsToContents()
+        header = self.device_table.horizontalHeader()
+        self.device_table.sortItems(header.sortIndicatorSection(), header.sortIndicatorOrder())
         self.status_label.setText(device_scan.get_last_warning())
         self.status_logger.info(f"{len(devices)} Laufwerke geladen")
 
@@ -223,42 +273,108 @@ class MainWindow(QMainWindow):
             result.append(row_data)
         return result
 
-    def _with_device(self, func):
+    def _ensure_devices_selected(self) -> List[Dict] | None:
         devices = self.selected_devices()
         if not devices:
             QMessageBox.information(self, "Keine Auswahl", "Bitte ein Laufwerk markieren.")
-            return
-        for dev in devices:
-            target = dev.get("target") or dev["device"]
-            func(target)
+            return None
+        return devices
+
+    def _handle_runner_error(self, exc: Exception) -> None:
+        QMessageBox.critical(self, "Fehler", str(exc))
+        self.status_logger.error(str(exc))
+
+    def _storcli_warning_text(self, exc: Exception) -> str:
+        message = str(exc)
+        if "storcli-Binary nicht gefunden" in message:
+            return "StorCLI nicht installiert/gefunden"
+        if "sudo-Passwort nicht konfiguriert" in message or "sudo-Authentifizierung fehlgeschlagen" in message:
+            return "StorCLI: Sudo-Authentifizierung fehlgeschlagen (Passwort in den Einstellungen prüfen)"
+        return f"StorCLI fehlgeschlagen: {message}"
+
+    def _restore_window_state(self) -> None:
+        geometry_hex = self.config.get("window_geometry")
+        if geometry_hex:
+            self.restoreGeometry(QByteArray.fromHex(str(geometry_hex).encode()))
+
+        splitter_state = self.config.get("splitter_state") or {}
+        if isinstance(splitter_state, dict):
+            main_state = splitter_state.get("main")
+            if main_state:
+                self.main_splitter.restoreState(QByteArray.fromHex(str(main_state).encode()))
+            left_state = splitter_state.get("left")
+            if left_state:
+                self.left_splitter.restoreState(QByteArray.fromHex(str(left_state).encode()))
+
+        widths = self.config.get("table_column_widths") or []
+        for idx, width in enumerate(widths):
+            if idx < self.device_table.columnCount() and width:
+                self.device_table.setColumnWidth(idx, width)
+
+        sort_cfg = self.config.get("table_sort") or {}
+        column = sort_cfg.get("column", 0)
+        order = sort_cfg.get("order", "asc")
+        if 0 <= column < self.device_table.columnCount():
+            sort_order = Qt.DescendingOrder if order == "desc" else Qt.AscendingOrder
+            self.device_table.horizontalHeader().setSortIndicator(column, sort_order)
 
     def run_secure_erase(self):
-        devices = self.selected_devices()
+        devices = self._ensure_devices_selected()
+        if not devices:
+            return
         planner = secure_erase.SecureErasePlanner(self.expert_mode.enabled)
         if not planner.confirm_devices(self, devices):
             return
-        for dev in devices:
-            dev_for_cmd = dev.copy()
-            dev_for_cmd["device"] = dev.get("target") or dev["device"]
-            commands = planner.build_commands(dev_for_cmd)
-            secure_erase.execute_commands(commands)
-            self.status_logger.success(f"Secure Erase gestartet für {dev['device']}")
+        try:
+            for dev in devices:
+                dev_for_cmd = dev.copy()
+                dev_for_cmd["device"] = dev.get("target") or dev["device"]
+                commands = planner.build_commands(dev_for_cmd)
+                secure_erase.execute_commands(commands)
+                self.status_logger.success(f"Secure Erase gestartet für {dev['device']}")
+        except RuntimeError as exc:
+            self._handle_runner_error(exc)
 
     def run_fio(self):
-        devices = self.selected_devices()
+        devices = self._ensure_devices_selected()
         if not devices:
-            QMessageBox.information(self, "Keine Auswahl", "Bitte ein Laufwerk markieren.")
             return
         preset = self.config.get("default_fio_preset", "quick-read")
-        for dev in devices:
-            target = dev.get("target") or dev["device"]
-            fio_runner.run_preset(target, preset)
-            self.status_logger.info(f"FIO gestartet ({preset}) auf {dev['device']} ({target})")
+        try:
+            for dev in devices:
+                target = dev.get("target") or dev["device"]
+                fio_runner.run_preset(target, preset)
+                self.status_logger.info(f"FIO gestartet ({preset}) auf {dev['device']} ({target})")
+        except RuntimeError as exc:
+            self._handle_runner_error(exc)
+
+    def run_smartctl_cli(self):
+        devices = self._ensure_devices_selected()
+        if not devices:
+            return
+        try:
+            for dev in devices:
+                target = dev.get("target") or dev["device"]
+                smart_tools.run_smartctl(target)
+                self.status_logger.info(f"SMART Scan gestartet für {dev['device']}")
+        except RuntimeError as exc:
+            self._handle_runner_error(exc)
+
+    def run_nvme_info(self):
+        devices = self._ensure_devices_selected()
+        if not devices:
+            return
+        try:
+            for dev in devices:
+                target = dev.get("target") or dev["device"]
+                smart_tools.run_nvme_smart(target)
+                self.status_logger.info(f"NVMe Info gestartet für {dev['device']}")
+        except RuntimeError as exc:
+            self._handle_runner_error(exc)
 
     def run_badblocks(self):
-        devices = self.selected_devices()
+        devices = self._ensure_devices_selected()
         if not devices:
-            QMessageBox.information(self, "Keine Auswahl", "Bitte ein Laufwerk markieren.")
             return
         configured_mode = self.config.get("default_badblocks_mode", "read-only")
         mode = configured_mode if self.expert_mode.enabled else "read-only"
@@ -271,10 +387,24 @@ class MainWindow(QMainWindow):
             )
             if reply != QMessageBox.Yes:
                 return
-        for dev in devices:
-            target = dev.get("target") or dev["device"]
-            badblocks_runner.run_badblocks(target, mode)
-            self.status_logger.info(f"Badblocks gestartet ({mode}) auf {dev['device']} ({target})")
+        try:
+            for dev in devices:
+                target = dev.get("target") or dev["device"]
+                badblocks_runner.run_badblocks(target, mode)
+                self.status_logger.info(f"Badblocks gestartet ({mode}) auf {dev['device']} ({target})")
+        except RuntimeError as exc:
+            self._handle_runner_error(exc)
+
+    def run_nwipe(self):
+        devices = self._ensure_devices_selected()
+        if not devices:
+            return
+        targets = [dev.get("target") or dev["device"] for dev in devices]
+        try:
+            nwipe_runner.run_nwipe(targets)
+            self.status_logger.info(f"Nwipe gestartet auf {', '.join(targets)}")
+        except RuntimeError as exc:
+            self._handle_runner_error(exc)
 
     def reboot_shredos(self):
         device = self.config.get("shredos_device", "/dev/sdb1")
@@ -288,12 +418,15 @@ class MainWindow(QMainWindow):
             shredos_boot.reboot_to_shredos()
             self.status_logger.info("ShredOS Reboot ausgelöst")
 
+    def _placeholder_blancco(self):
+        QMessageBox.information(self, "BlanccoOS", "Integration folgt in einer späteren Version.")
+
     def show_storcli_overview(self):
         try:
             data = raid_storcli.storcli_overview()
         except Exception as exc:  # pragma: no cover - defensive
             self.status_logger.error(f"StorCLI Übersicht fehlgeschlagen: {exc}")
-            self.status_label.setText("WARNUNG: StorCLI nicht verfügbar")
+            self.status_label.setText(self._storcli_warning_text(exc))
             return
         self._show_json_dialog("StorCLI Übersicht", data)
 
@@ -308,7 +441,7 @@ class MainWindow(QMainWindow):
                 merged[cid] = raid_storcli.list_physical_drives(cid)
         except Exception as exc:  # pragma: no cover - defensive
             self.status_logger.error(f"StorCLI Physical fehlgeschlagen: {exc}")
-            self.status_label.setText("WARNUNG: StorCLI nicht verfügbar")
+            self.status_label.setText(self._storcli_warning_text(exc))
             return
         self._show_json_dialog("StorCLI Physical", merged)
 
@@ -321,7 +454,7 @@ class MainWindow(QMainWindow):
             self.status_logger.info("JBOD-Befehl ausgeführt")
         except Exception as exc:  # pragma: no cover - defensive
             self.status_logger.error(f"StorCLI JBOD-Fehler: {exc}")
-            self.status_label.setText("WARNUNG: StorCLI nicht verfügbar")
+            self.status_label.setText(self._storcli_warning_text(exc))
         self._reload_devices()
 
     def _show_json_dialog(self, title: str, data):
@@ -336,6 +469,20 @@ class MainWindow(QMainWindow):
         if folder:
             os.makedirs(folder, exist_ok=True)
             os.system(f"xdg-open '{folder}' &")
+
+    def _persist_ui_state(self) -> None:
+        self.config["window_geometry"] = bytes(self.saveGeometry().toHex()).decode("ascii")
+        self.config["splitter_state"] = {
+            "main": bytes(self.main_splitter.saveState().toHex()).decode("ascii"),
+            "left": bytes(self.left_splitter.saveState().toHex()).decode("ascii"),
+        }
+        self.config["table_column_widths"] = [
+            self.device_table.columnWidth(i) for i in range(self.device_table.columnCount())
+        ]
+        header = self.device_table.horizontalHeader()
+        order = "desc" if header.sortIndicatorOrder() == Qt.DescendingOrder else "asc"
+        self.config["table_sort"] = {"column": header.sortIndicatorSection(), "order": order}
+        save_config(self.config)
 
     def open_settings(self):
         win = SettingsWindow(self.config.copy(), self.apply_config)
@@ -365,6 +512,7 @@ class MainWindow(QMainWindow):
         self.refresh_devices()
         if hasattr(self, "btn_jbod"):
             self.btn_jbod.setEnabled(enabled)
+        self._update_expert_visibility()
 
     def on_refresh_clicked(self):
         try:
@@ -372,3 +520,11 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # pragma: no cover - defensive
             self._append_status(f"StorCLI JBOD-Fehler: {exc}")
         self._reload_devices()
+
+    def _update_expert_visibility(self):
+        if hasattr(self, "raid_group"):
+            self.raid_group.setVisible(self.expert_mode.enabled)
+
+    def closeEvent(self, event):
+        self._persist_ui_state()
+        super().closeEvent(event)

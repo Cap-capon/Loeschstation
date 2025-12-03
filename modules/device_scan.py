@@ -8,6 +8,7 @@ from modules import raid_storcli
 logger = logging.getLogger("loeschstation")
 
 _last_warning: str = ""
+SYSTEM_MOUNTPOINTS = ("/", "/boot", "/boot/efi", "/usr", "/var")
 
 
 def _set_warning(message: str) -> None:
@@ -47,8 +48,7 @@ def _collect_mountpoints(dev: Dict) -> Set[str]:
 
 def _is_system_disk(dev: Dict) -> bool:
     mountpoints = _collect_mountpoints(dev)
-    system_points = {"/", "/boot", "/boot/efi", "/var", "/usr", "/home"}
-    return any(mp in system_points or mp.startswith("/var/") or mp.startswith("/usr/") or mp.startswith("/home/") for mp in mountpoints)
+    return any(mp in SYSTEM_MOUNTPOINTS for mp in mountpoints)
 
 
 def scan_lsblk_disks() -> List[Dict]:
@@ -70,6 +70,7 @@ def scan_lsblk_disks() -> List[Dict]:
                 "model": dev.get("model", ""),
                 "serial": dev.get("serial", ""),
                 "transport": dev.get("tran", dev.get("subsystems", "")),
+                "mountpoints": sorted(list(_collect_mountpoints(dev))),
                 "is_system": _is_system_disk(dev),
             }
         )
@@ -87,7 +88,7 @@ def scan_megaraid_devices() -> List[Dict]:
         controllers = raid_storcli.list_controllers()
     except Exception as exc:  # pragma: no cover - defensive
         had_warning = True
-        _set_warning(f"StorCLI Fehler (Controller): {exc}")
+        _handle_storcli_error(exc, "Controller")
         logger.debug("StorCLI Controller-Scan fehlgeschlagen: %s", exc, exc_info=True)
         return devices
 
@@ -99,7 +100,7 @@ def scan_megaraid_devices() -> List[Dict]:
             pds = raid_storcli.list_physical_drives(cid)
         except Exception as exc:  # pragma: no cover - defensive
             had_warning = True
-            _set_warning(f"StorCLI Fehler (C{cid} PD LIST): {exc}")
+            _handle_storcli_error(exc, f"C{cid} PD LIST")
             logger.debug("StorCLI PD-Liste fehlgeschlagen für Controller %s: %s", cid, exc, exc_info=True)
             continue
 
@@ -120,6 +121,16 @@ def scan_megaraid_devices() -> List[Dict]:
     if not had_warning:
         _set_warning("")
     return devices
+
+
+def _handle_storcli_error(exc: Exception, context: str) -> None:
+    message = str(exc)
+    if "storcli-Binary nicht gefunden" in message:
+        _set_warning("StorCLI nicht installiert/gefunden")
+    elif "sudo-Passwort nicht konfiguriert" in message or "sudo-Authentifizierung fehlgeschlagen" in message:
+        _set_warning("StorCLI: Sudo-Authentifizierung fehlgeschlagen (Passwort in den Einstellungen prüfen)")
+    else:
+        _set_warning(f"StorCLI Fehler ({context}): {exc}")
 
 
 def scan_all_devices(show_system_disks: bool) -> List[Dict]:
