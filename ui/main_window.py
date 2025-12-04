@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 from datetime import datetime
 from typing import List, Dict
 
@@ -80,7 +81,7 @@ class MainWindow(QMainWindow):
         left.setLayout(left_layout)
 
         self.device_table = QTableWidget()
-        self.device_table.setColumnCount(11)
+        self.device_table.setColumnCount(13)
         self.device_table.setHorizontalHeaderLabels([
             "Bay",
             "Pfad",
@@ -93,6 +94,8 @@ class MainWindow(QMainWindow):
             "FIO Lat (ms)",
             "FIO OK",
             "Erase OK",
+            "Erase Zeitstempel",
+            "Löschstandard",
         ])
         self.device_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.device_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -101,16 +104,13 @@ class MainWindow(QMainWindow):
         header = self.device_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
         header.setStretchLastSection(True)
+        header.setSectionsMovable(True)
+        header.setDragEnabled(True)
 
         btn_row = QHBoxLayout()
         self.btn_refresh = QPushButton("Aktualisieren")
         self.btn_refresh.clicked.connect(self.on_refresh_clicked)
         btn_row.addWidget(self.btn_refresh)
-
-        self.btn_cert_gui = QPushButton("Zertifikat (GUI)")
-        self.btn_cert_gui.setIcon(self._load_icon(icons.ICON_CERT_GUI))
-        self.btn_cert_gui.clicked.connect(self.launch_cert_gui)
-        btn_row.addWidget(self.btn_cert_gui)
 
         self.btn_open_logs = QPushButton("Log-Ordner öffnen")
         self.btn_open_logs.setIcon(self._load_icon(icons.ICON_LOG_FOLDER))
@@ -120,6 +120,13 @@ class MainWindow(QMainWindow):
         self.btn_settings = QPushButton("Einstellungen")
         self.btn_settings.clicked.connect(self.open_settings)
         btn_row.addWidget(self.btn_settings)
+
+        btn_row.addStretch()
+
+        self.btn_cert_gui = QPushButton("Zertifikat (GUI)")
+        self.btn_cert_gui.setIcon(self._load_icon(icons.ICON_CERT_GUI))
+        self.btn_cert_gui.clicked.connect(self.launch_cert_gui)
+        btn_row.addWidget(self.btn_cert_gui)
 
         table_container = QWidget()
         table_layout = QVBoxLayout()
@@ -134,7 +141,8 @@ class MainWindow(QMainWindow):
         self.left_splitter = QSplitter(Qt.Vertical)
         self.left_splitter.addWidget(table_container)
         self.left_splitter.addWidget(self.status_log)
-        self.left_splitter.setSizes([500, 250])
+        # Mehr Platz für die (breitere) Gerätetabelle
+        self.left_splitter.setSizes([700, 200])
 
         left_layout.addWidget(self.left_splitter)
 
@@ -155,8 +163,7 @@ class MainWindow(QMainWindow):
         right_layout.addStretch()
 
         self.main_splitter.addWidget(right)
-        self.main_splitter.setStretchFactor(0, 3)
-        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.setSizes([1050, 400])
 
         self._restore_window_state()
         self._update_expert_visibility()
@@ -176,6 +183,11 @@ class MainWindow(QMainWindow):
         if path and os.path.exists(path):
             return QIcon(path)
         if path:
+            # Fallback: relative Pfade (img/...) auf Projektverzeichnis mappen
+            candidate = os.path.join(os.path.dirname(__file__), "..", path)
+            if os.path.exists(candidate):
+                return QIcon(candidate)
+        if path:
             theme_icon = QIcon.fromTheme(path)
             if not theme_icon.isNull():
                 return theme_icon
@@ -192,11 +204,10 @@ class MainWindow(QMainWindow):
         btn.clicked.connect(func)
         return btn
 
-    def _build_grid_box(self, title: str, buttons: List[QPushButton]) -> QGroupBox:
+    def _build_grid_box(self, title: str, buttons: List[QPushButton], columns: int = 3) -> QGroupBox:
         box = QGroupBox(title)
         grid = QGridLayout()
         grid.setSpacing(8)
-        columns = 4
         for idx, btn in enumerate(buttons):
             row = idx // columns
             col = idx % columns
@@ -216,7 +227,7 @@ class MainWindow(QMainWindow):
         self.btn_fio = self._create_tile_button("FIO (Preset)", self.run_fio, icons.ICON_FIO)
         self.btn_badblocks = self._create_tile_button("Badblocks", self.run_badblocks, icons.ICON_BADBLOCKS)
         buttons.extend([self.btn_fio, self.btn_badblocks])
-        return self._build_grid_box("Diagnose & Tests", buttons)
+        return self._build_grid_box("Diagnose & Tests", buttons, columns=3)
 
     def _build_wipe_group(self) -> QGroupBox:
         self.btn_nwipe = self._create_tile_button("Nwipe", self.run_nwipe, icons.ICON_NWIPE)
@@ -224,15 +235,15 @@ class MainWindow(QMainWindow):
             "Secure Erase", self.run_secure_erase, icons.ICON_SECURE_ERASE
         )
         buttons = [self.btn_nwipe, self.btn_secure]
-        return self._build_grid_box("Löschen / Secure Erase", buttons)
+        return self._build_grid_box("Löschen / Secure Erase", buttons, columns=2)
 
     def _build_external_group(self) -> QGroupBox:
         buttons = [
             self._create_tile_button("ShredOS Reboot", self.reboot_shredos, icons.ICON_SHREDOS),
-            self._create_tile_button("BlanccoOS", self._placeholder_blancco, icons.ICON_BLANCCO_OS),
+            self._create_tile_button("BlanccoOS", self._placeholder_blancco, icons.ICON_BLANCCO),
         ]
         buttons[-1].setEnabled(False)
-        return self._build_grid_box("Externe Systeme", buttons)
+        return self._build_grid_box("Externe Systeme", buttons, columns=2)
 
     def _build_raid_group(self) -> QGroupBox:
         buttons = [
@@ -246,7 +257,7 @@ class MainWindow(QMainWindow):
         ]
         self.btn_jbod = buttons[-1]
         self.btn_jbod.setEnabled(self.expert_mode.enabled)
-        box = self._build_grid_box("RAID / Controller", buttons)
+        box = self._build_grid_box("RAID / Controller", buttons, columns=2)
         return box
 
     def _append_status(self, text: str) -> None:
@@ -281,10 +292,21 @@ class MainWindow(QMainWindow):
             if "device_id" not in normalized or not normalized.get("device_id"):
                 normalized["device_id"] = normalized.get("path") or normalized.get("device")
 
+            # Bay entspricht dem ursprünglichen Device-Bezeichner (für Zertifikate relevant)
+            normalized["bay"] = normalized.get("bay") or normalized.get("device")
+
             # Vorherige Testergebnisse beibehalten, damit FIO/Erase nach Reload sichtbar bleiben
             previous_entry = previous.get(normalized["device_id"])
             if previous_entry:
-                for key in ("fio_bw", "fio_iops", "fio_lat", "fio_ok", "erase_ok"):
+                for key in (
+                    "fio_bw",
+                    "fio_iops",
+                    "fio_lat",
+                    "fio_ok",
+                    "erase_ok",
+                    "erase_timestamp",
+                    "erase_method",
+                ):
                     if key in previous_entry and normalized.get(key) is None:
                         normalized[key] = previous_entry.get(key)
 
@@ -311,7 +333,7 @@ class MainWindow(QMainWindow):
             self.device_table.insertRow(row)
             for col, key in enumerate(
                 [
-                    "device",
+                    "bay",
                     "path",
                     "size",
                     "model",
@@ -322,11 +344,15 @@ class MainWindow(QMainWindow):
                     "fio_lat",
                     "fio_ok",
                     "erase_ok",
+                    "erase_timestamp",
+                    "erase_method",
                 ]
             ):
                 value = dev.get(key, "")
                 if isinstance(value, bool):
                     display = "OK" if value else "Fehler"
+                elif isinstance(value, float):
+                    display = f"{value:.3f}" if key == "fio_lat" else f"{value:.2f}"
                 else:
                     display = "–" if value in (None, "") else str(value)
                 item = QTableWidgetItem(display)
@@ -343,6 +369,18 @@ class MainWindow(QMainWindow):
             if dev.get("device_id") == device_id:
                 dev.update(updates)
                 return
+
+    def _erase_method_label(self, device: Dict) -> str:
+        """
+        Beschreibt den verwendeten Erase-Befehl – für Zertifikate und Tabelle.
+        NVMe nutzt das Format-Kommando, SATA/ATA die Secure-Erase Variante.
+        """
+
+        transport = (device.get("transport") or "").lower()
+        device_name = device.get("device") or ""
+        if "nvme" in transport or device_name.startswith("/dev/nvme"):
+            return "NVMe Format"
+        return "ATA Secure Erase"
 
     def refresh_devices(self):
         self._reload_devices()
@@ -449,6 +487,12 @@ class MainWindow(QMainWindow):
             if idx < self.device_table.columnCount() and width:
                 self.device_table.setColumnWidth(idx, width)
 
+        header_state = self.config.get("table_header_state")
+        if header_state:
+            self.device_table.horizontalHeader().restoreState(
+                QByteArray.fromHex(str(header_state).encode())
+            )
+
         sort_cfg = self.config.get("table_sort") or {}
         column = sort_cfg.get("column", 0)
         order = sort_cfg.get("order", "asc")
@@ -472,7 +516,15 @@ class MainWindow(QMainWindow):
                 dev_for_cmd["device"] = dev.get("target") or dev["device"]
                 commands = planner.build_commands(dev_for_cmd)
                 result = secure_erase.execute_commands(commands)
-                self._apply_device_updates(dev, {"erase_ok": result.get("ok")})
+                method = self._erase_method_label(dev_for_cmd)
+                self._apply_device_updates(
+                    dev,
+                    {
+                        "erase_ok": result.get("ok"),
+                        "erase_timestamp": result.get("timestamp"),
+                        "erase_method": method,
+                    },
+                )
                 self.status_logger.success(
                     f"Secure Erase gestartet für {dev['device']} – OK={result.get('ok')}"
                 )
@@ -599,9 +651,18 @@ class MainWindow(QMainWindow):
                 return
         try:
             for dev in devices:
-                target = dev.get("target") or dev["device"]
-                badblocks_runner.run_badblocks(target, mode)
-                self.status_logger.info(f"Badblocks gestartet ({mode}) auf {dev['device']} ({target})")
+                result = badblocks_runner.run_badblocks(dev, mode)
+                updates = {
+                    "erase_ok": result.get("ok"),
+                    "erase_timestamp": result.get("timestamp"),
+                    "erase_method": result.get("method"),
+                }
+                self._apply_device_updates(dev, updates)
+                target = result.get("target") or dev.get("target") or dev.get("device")
+                self.status_logger.info(
+                    f"Badblocks abgeschlossen ({mode}) auf {dev['device']} ({target}) – OK={result.get('ok')}"
+                )
+            self._populate_table()
         except RuntimeError as exc:
             self._handle_runner_error(exc)
 
@@ -686,7 +747,8 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, title, pretty)
 
     def launch_cert_gui(self):
-        os.system("python3 certificates/export_certificates_gui.py &")
+        script = os.path.join(os.getcwd(), "certificates", "export_certificates_gui.py")
+        subprocess.Popen(["python3", script])
 
     def open_log_folder(self):
         folder = self.config.get("log_dir")
@@ -703,6 +765,9 @@ class MainWindow(QMainWindow):
         self.config["table_column_widths"] = [
             self.device_table.columnWidth(i) for i in range(self.device_table.columnCount())
         ]
+        self.config["table_header_state"] = bytes(
+            self.device_table.horizontalHeader().saveState().toHex()
+        ).decode("ascii")
         header = self.device_table.horizontalHeader()
         order = "desc" if header.sortIndicatorOrder() == Qt.DescendingOrder else "asc"
         self.config["table_sort"] = {"column": header.sortIndicatorSection(), "order": order}

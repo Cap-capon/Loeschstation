@@ -17,6 +17,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "window_geometry": None,
     "splitter_state": None,
     "table_column_widths": [],
+    "table_header_state": None,
     "table_sort": {"column": 0, "order": "asc"},
 }
 

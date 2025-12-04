@@ -49,10 +49,16 @@ def _format_status_text(dev: Dict) -> Tuple[str, str]:
     elif fio_ok is False:
         fio_text += " (Fehler)"
     erase_text = "–"
+    timestamp = dev.get("erase_timestamp")
+    method = dev.get("erase_method")
     if erase_ok is True:
         erase_text = "OK"
     elif erase_ok is False:
         erase_text = "Fehler"
+    if method:
+        erase_text = f"{erase_text} ({method})" if erase_text != "–" else method
+    if timestamp:
+        erase_text = f"{erase_text} @ {timestamp}" if erase_text != "–" else timestamp
     return fio_text, erase_text
 
 
@@ -75,9 +81,12 @@ def read_snapshot_entries() -> List[Dict]:
                 "timestamp": exported_at,
                 "aktion": "Gerätestatus",
                 "device": dev.get("device", ""),
+                "bay": dev.get("bay", dev.get("device", "")),
+                "path": dev.get("path", ""),
                 "size": dev.get("size", ""),
                 "model": dev.get("model", ""),
                 "serial": dev.get("serial", ""),
+                "transport": dev.get("transport", ""),
                 "befehl": f"FIO={fio_text} | SecureErase={erase_text}",
                 "fio_text": fio_text,
                 "erase_text": erase_text,

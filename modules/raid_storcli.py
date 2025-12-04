@@ -90,6 +90,9 @@ def list_physical_drives(controller_id: int) -> List[Dict]:
             eid_str, slot_str = eid_slt.split(":", 1)
             eid = _safe_int(eid_str)
             slot = _safe_int(slot_str)
+
+        # Seriennummer/Modell werden aus dem Detail-Call geholt, falls die
+        # Übersicht leer ist (StorCLI liefert diese Werte nicht immer).
         serial = (
             entry.get("SN")
             or entry.get("S/N")
@@ -97,10 +100,11 @@ def list_physical_drives(controller_id: int) -> List[Dict]:
             or ""
         )
         model = entry.get("Model", "")
-        if (not serial or not model) and eid is not None and slot is not None:
-            detail = _get_pd_details(controller_id, eid, slot)
-            serial = serial or detail.get("serial", "")
-            model = model or detail.get("model", "")
+        detail = _get_pd_details(controller_id, eid, slot)
+        if detail:
+            serial = detail.get("serial") or serial
+            model = detail.get("model") or model
+
         drives.append(
             {
                 "controller": controller_id,
@@ -183,6 +187,9 @@ def set_all_drives_to_jbod(controller_id: Optional[int] = None) -> None:
 
 
 def _get_pd_details(controller_id: int, eid: int, slot: int) -> Dict[str, str]:
+    if eid is None or slot is None:
+        return {"serial": "", "model": ""}
+
     try:
         data = _run_storcli_json(
             [f"/c{controller_id}", f"/e{eid}", f"/s{slot}", "show", "all", "J"]
