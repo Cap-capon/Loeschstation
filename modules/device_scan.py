@@ -139,7 +139,7 @@ def scan_megaraid_devices() -> List[Dict]:
                     "path": virtual_path,
                     "size": pd.get("size", ""),
                     "model": pd.get("model", ""),
-                    "serial": "",
+                    "serial": pd.get("serial", ""),
                     "transport": f"storcli:{pd.get('intf', '')}",
                     "is_system": False,
                     "erase_allowed": True,

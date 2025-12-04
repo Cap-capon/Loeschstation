@@ -1,8 +1,12 @@
 import json
+import logging
 import subprocess
 from typing import Dict, List, Optional
 
 from modules import config_manager
+
+
+logger = logging.getLogger("loeschstation")
 
 
 STORCLI_BIN = "storcli"
@@ -24,15 +28,25 @@ def _run_storcli_json(args: List[str]) -> Dict:
         timeout=60,
     )
 
+    stdout = proc.stdout or ""
     if proc.returncode != 0:
-        stderr = (proc.stderr or proc.stdout or "").strip()
+        stderr = (proc.stderr or stdout or "").strip()
+        lower_err = stderr.lower()
+        data: Dict = {}
+        try:
+            data = json.loads(stdout or "{}")
+        except json.JSONDecodeError:
+            data = {}
+
+        if "command invalid" in lower_err or _is_jbod_command_invalid(data):
+            raise RuntimeError("storcli-jbod-unsupported")
         if "Authentication failed" in stderr:
             raise RuntimeError("sudo-Authentifizierung fehlgeschlagen")
         if "command not found" in stderr or "No such file" in stderr:
             raise RuntimeError("storcli-Binary nicht gefunden")
         raise RuntimeError(f"StorCLI fehlgeschlagen: {stderr}")
 
-    return json.loads(proc.stdout or "{}")
+    return json.loads(stdout or "{}")
 
 
 def storcli_overview() -> Dict:
@@ -76,6 +90,14 @@ def list_physical_drives(controller_id: int) -> List[Dict]:
             eid_str, slot_str = eid_slt.split(":", 1)
             eid = _safe_int(eid_str)
             slot = _safe_int(slot_str)
+        serial = (
+            entry.get("SN")
+            or entry.get("S/N")
+            or entry.get("Serial Number")
+            or ""
+        )
+        if not serial and eid is not None and slot is not None:
+            serial = _get_pd_serial(controller_id, eid, slot)
         drives.append(
             {
                 "controller": controller_id,
@@ -86,6 +108,7 @@ def list_physical_drives(controller_id: int) -> List[Dict]:
                 "intf": entry.get("Intf", ""),
                 "med": entry.get("Med", ""),
                 "model": entry.get("Model", ""),
+                "serial": serial,
                 "state": entry.get("State", ""),
             }
         )
@@ -145,4 +168,47 @@ def set_all_drives_to_jbod(controller_id: Optional[int] = None) -> None:
         cid = ctrl.get("id")
         if cid is None:
             continue
-        _run_storcli_json([f"/c{cid}", "/eall", "/sall", "set", "jbod"])
+        try:
+            _run_storcli_json([f"/c{cid}", "/eall", "/sall", "set", "jbod"])
+        except RuntimeError as exc:
+            if str(exc) == "storcli-jbod-unsupported":
+                logger.info(
+                    "JBOD auf Controller %s nicht unterstützt oder bereits gesetzt", cid
+                )
+                continue
+            raise
+
+
+def _get_pd_serial(controller_id: int, eid: int, slot: int) -> str:
+    try:
+        data = _run_storcli_json(
+            [f"/c{controller_id}", f"/e{eid}", f"/s{slot}", "show", "all", "J"]
+        )
+    except Exception:
+        return ""
+
+    controllers = data.get("Controllers", []) or []
+    if not controllers:
+        return ""
+
+    resp = (controllers[0] or {}).get("Response Data", {}) or {}
+    for key, value in resp.items():
+        if not isinstance(value, dict):
+            continue
+        serial = value.get("SN") or value.get("S/N") or value.get("Serial Number")
+        if serial:
+            return str(serial)
+    return ""
+
+
+def _is_jbod_command_invalid(data: Dict) -> bool:
+    controllers = data.get("Controllers", []) or []
+    for ctrl in controllers:
+        resp = ctrl.get("Response Data") or {}
+        if not isinstance(resp, dict):
+            continue
+        description = str(resp.get("Description") or "")
+        err_msg = str(resp.get("ErrMsg") or "")
+        if "Set Drive JBOD Failed" in description and "command invalid" in err_msg.lower():
+            return True
+    return False
