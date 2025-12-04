@@ -1,3 +1,4 @@
+import datetime
 import shlex
 import subprocess
 from typing import Dict, List
@@ -62,4 +63,7 @@ def execute_commands(commands: List[List[str]]) -> Dict:
         except FileNotFoundError:
             # Terminal nicht verfügbar → als Fehler markieren, aber Schleife fortsetzen
             all_ok = False
-    return {"ok": all_ok}
+    return {
+        "ok": all_ok,
+        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }

@@ -90,6 +90,7 @@ def scan_linux_disks() -> List[Dict]:
         devices.append(
             {
                 "device": dev.get("name", path),
+                "bay": dev.get("name", path),
                 "path": path,
                 "size": dev.get("size", ""),
                 "model": dev.get("model", ""),
@@ -103,7 +104,10 @@ def scan_linux_disks() -> List[Dict]:
                 "fio_iops": None,
                 "fio_lat": None,
                 "fio_ok": None,
+                # Löschstatus, auch für Zertifikate exportiert
                 "erase_ok": None,
+                "erase_timestamp": None,
+                "erase_method": None,
                 # eindeutiger Schlüssel für Zertifikate/Tabellenupdates
                 "device_id": path,
             }
@@ -144,8 +148,10 @@ def scan_megaraid_devices() -> List[Dict]:
             devices.append(
                 {
                     "device": dev_name,
+                    "bay": dev_name,
                     "path": virtual_path,
                     "size": pd.get("size", ""),
+                    # Seriennummer/Modell stammen aus den StorCLI-Detail-Calls
                     "model": pd.get("model", ""),
                     "serial": pd.get("serial", ""),
                     "transport": f"storcli:{pd.get('intf', '')}",
@@ -156,7 +162,10 @@ def scan_megaraid_devices() -> List[Dict]:
                     "fio_iops": None,
                     "fio_lat": None,
                     "fio_ok": None,
+                    # Löschstatus inkl. Methode/Timestamp für Zertifikate
                     "erase_ok": None,
+                    "erase_timestamp": None,
+                    "erase_method": None,
                     "device_id": f"{virtual_path}",
                 }
             )
