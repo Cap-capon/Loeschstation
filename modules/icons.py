@@ -3,18 +3,26 @@ import os
 
 BASE_IMG_DIR = os.path.join(os.path.dirname(__file__), "..", "img")
 
-ICON_GSMART = os.path.join(BASE_IMG_DIR, "gsmart.svg")
-ICON_GNOME_DISKS = os.path.join(BASE_IMG_DIR, "gnome.svg")
-ICON_PARTITION = os.path.join(BASE_IMG_DIR, "partition.svg")
-ICON_SMARTCLI = os.path.join(BASE_IMG_DIR, "smartcli.svg")
-ICON_NVMEINFO = os.path.join(BASE_IMG_DIR, "nvmeinfo.svg")
-ICON_FIO = os.path.join(BASE_IMG_DIR, "fio.svg")
-ICON_BADBLOCKS = os.path.join(BASE_IMG_DIR, "badblocks.svg")
-ICON_NWIPE = os.path.join(BASE_IMG_DIR, "blancco_icon.svg")
-ICON_SECURE_ERASE = os.path.join(BASE_IMG_DIR, "secure_erase.svg")
-ICON_SHREDOS = os.path.join(BASE_IMG_DIR, "shredos_icon.svg")
-ICON_BLANCCO_OS = os.path.join(BASE_IMG_DIR, "blancco_os.svg")  # TODO: Datei anlegen
-ICON_CERT_GUI = os.path.join(BASE_IMG_DIR, "cert_gui.svg")
-ICON_LOG_FOLDER = os.path.join(BASE_IMG_DIR, "log_folder.svg")
+# Dateibasierte Icons
+ICON_SHREDOS = os.path.join(BASE_IMG_DIR, "shredOS_icon.svg")
+ICON_BLANCCO = os.path.join(BASE_IMG_DIR, "blancco_icon.svg")
 
-# Weitere Icons können hier ergänzt werden, sobald die Dateien vorhanden sind.
+# Theme-basierte Icons
+ICON_GSMART = "gsmartcontrol"
+ICON_GNOME_DISKS = "org.gnome.DiskUtility"
+ICON_PARTITIONMANAGER = "partitionmanager"
+ICON_GPARTED = "gparted"
+ICON_BAOBAB = "baobab"
+ICON_SMARTCLI = "utilities-terminal"
+ICON_NVMEINFO = "document-properties"
+ICON_FIO = "utilities-terminal"
+ICON_BADBLOCKS = "media-removable"
+ICON_NWIPE = os.path.join(BASE_IMG_DIR, "blancco_icon.svg")
+ICON_SECURE_ERASE = "edit-delete"
+ICON_BLANCCO_OS = ICON_BLANCCO
+ICON_CERT_GUI = "text-x-generic"
+ICON_LOG_FOLDER = "folder"
+ICON_BLEACHBIT = "bleachbit"
+
+# Default-Icon für unbekannte Tools
+ICON_DEFAULT = "drive-harddisk"

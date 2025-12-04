@@ -9,9 +9,11 @@ GUI-Tool: Lösch-Zertifikate verwalten
 - Öffnet den Log-Ordner im Dateimanager
 """
 
-import os
 import csv
+import json
+import os
 from datetime import datetime
+from typing import Dict, List, Tuple
 import subprocess
 import sys
 
@@ -26,6 +28,7 @@ from PySide6.QtWidgets import (
 
 LOG_DIR = os.path.expanduser("~/loeschstation_logs")
 LOG_FILE = os.path.join(LOG_DIR, "wipe_log.csv")
+SNAPSHOT_FILE = os.path.join(LOG_DIR, "devices_snapshot.json")
 CERT_DIR = os.path.join(LOG_DIR, "certificates")
 
 
@@ -34,7 +37,56 @@ def ensure_dirs():
     os.makedirs(CERT_DIR, exist_ok=True)
 
 
-def read_log_entries():
+def _format_status_text(dev: Dict) -> Tuple[str, str]:
+    fio_ok = dev.get("fio_ok")
+    erase_ok = dev.get("erase_ok")
+    fio_bw = dev.get("fio_bw") if dev.get("fio_bw") is not None else "–"
+    fio_iops = dev.get("fio_iops") if dev.get("fio_iops") is not None else "–"
+    fio_lat = dev.get("fio_lat") if dev.get("fio_lat") is not None else "–"
+    fio_text = f"{fio_bw} MB/s, {fio_iops} IOPS, {fio_lat} ms"
+    if fio_ok is True:
+        fio_text += " (OK)"
+    elif fio_ok is False:
+        fio_text += " (Fehler)"
+    erase_text = "–"
+    if erase_ok is True:
+        erase_text = "OK"
+    elif erase_ok is False:
+        erase_text = "Fehler"
+    return fio_text, erase_text
+
+
+def read_snapshot_entries() -> List[Dict]:
+    ensure_dirs()
+    if not os.path.exists(SNAPSHOT_FILE):
+        return []
+    try:
+        with open(SNAPSHOT_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    exported_at = data.get("exported_at") or datetime.now().isoformat()
+    entries: List[Dict] = []
+    for dev in data.get("devices", []):
+        fio_text, erase_text = _format_status_text(dev)
+        entries.append(
+            {
+                "timestamp": exported_at,
+                "aktion": "Gerätestatus",
+                "device": dev.get("device", ""),
+                "size": dev.get("size", ""),
+                "model": dev.get("model", ""),
+                "serial": dev.get("serial", ""),
+                "befehl": f"FIO={fio_text} | SecureErase={erase_text}",
+                "fio_text": fio_text,
+                "erase_text": erase_text,
+            }
+        )
+    return entries
+
+
+def read_log_entries() -> List[Dict]:
     """
     Liest die wipe_log.csv und gibt eine Liste von Dicts zurück.
     """
@@ -42,7 +94,7 @@ def read_log_entries():
     if not os.path.exists(LOG_FILE):
         return []
 
-    entries = []
+    entries: List[Dict] = []
     with open(LOG_FILE, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter=";")
         for row in reader:
@@ -81,15 +133,17 @@ def create_pdf(entry):
     c.drawString(50, height - 170, f"Seriennummer:      {entry.get('serial', '')}")
     c.drawString(50, height - 190, f"Größe:             {entry.get('size', '')}")
     c.drawString(50, height - 210, f"Aktion:            {entry.get('aktion', '')}")
+    c.drawString(50, height - 230, f"FIO:               {entry.get('fio_text', '–')}")
+    c.drawString(50, height - 250, f"Secure Erase:      {entry.get('erase_text', '–')}")
 
     # Befehl
     c.setFont("Helvetica-Bold", 14)
-    c.drawString(50, height - 250, "Ausgeführter Befehl:")
+    c.drawString(50, height - 290, "Ausgeführter Befehl:")
 
     c.setFont("Helvetica", 10)
     befehl = entry.get("befehl", "")
     max_width = width - 80
-    line_y = height - 270
+    line_y = height - 310
     line = ""
     for word in befehl.split():
         test_line = (line + " " + word).strip()
@@ -143,7 +197,7 @@ class CertificateGUI(QWidget):
 
         # Tabelle
         self.table = QTableWidget()
-        self.table.setColumnCount(7)
+        self.table.setColumnCount(9)
         self.table.setHorizontalHeaderLabels([
             "Zeitstempel",
             "Aktion",
@@ -151,7 +205,9 @@ class CertificateGUI(QWidget):
             "Größe",
             "Modell",
             "Seriennummer",
-            "Befehl"
+            "Befehl",
+            "FIO",
+            "Erase",
         ])
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -187,7 +243,9 @@ class CertificateGUI(QWidget):
         self.load_entries()
 
     def load_entries(self):
-        self.entries = read_log_entries()
+        self.entries = read_snapshot_entries()
+        if not self.entries:
+            self.entries = read_log_entries()
         self.table.setRowCount(0)
 
         if not self.entries:
@@ -203,6 +261,8 @@ class CertificateGUI(QWidget):
             self.table.setItem(row, 4, QTableWidgetItem(e.get("model", "")))
             self.table.setItem(row, 5, QTableWidgetItem(e.get("serial", "")))
             self.table.setItem(row, 6, QTableWidgetItem(e.get("befehl", "")))
+            self.table.setItem(row, 7, QTableWidgetItem(e.get("fio_text", "")))
+            self.table.setItem(row, 8, QTableWidgetItem(e.get("erase_text", "")))
 
         self.log_text.append(f"{len(self.entries)} Einträge aus der Log-Datei geladen.\n")
 
