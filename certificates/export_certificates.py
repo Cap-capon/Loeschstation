@@ -1,84 +1,91 @@
-#!/usr/bin/env python3
-"""
-Export-Tool für die Festplatten-Löschstation
-- liest wipe_log.csv
-- erzeugt pro Laufwerk ein PDF-Zertifikat
-- öffnet danach den Log-Ordner im Dateimanager
-"""
-
 import csv
 import json
 import os
 from datetime import datetime
-from typing import Dict, List, Tuple
-import subprocess
+from typing import Dict, List
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
+from modules import config_manager
 
-LOG_DIR = os.path.expanduser("~/loeschstation_logs")
-LOG_FILE = os.path.join(LOG_DIR, "wipe_log.csv")
-SNAPSHOT_FILE = os.path.join(LOG_DIR, "devices_snapshot.json")
-CERT_DIR = os.path.join(LOG_DIR, "certificates")
+cfg = config_manager.load_config()
+log_dir = cfg.get("log_dir", config_manager.DEFAULT_CONFIG["log_dir"])
+cert_dir = cfg.get("cert_dir", os.path.join(log_dir, "certificates"))
+LOG_FILE = os.path.join(log_dir, "wipe_log.csv")
+SNAPSHOT_FILE = os.path.join(log_dir, "devices_snapshot.json")
 
+
+# --- Hilfsfunktionen -----------------------------------------------------
 
 def ensure_dirs():
-    os.makedirs(LOG_DIR, exist_ok=True)
-    os.makedirs(CERT_DIR, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
+    os.makedirs(cert_dir, exist_ok=True)
 
 
-def create_pdf(entry):
-    """
-    Erzeugt ein PDF-Zertifikat anhand eines Log-Eintrags
-    entry = dict {...}
-    """
-    timestamp = (entry.get("timestamp") or "").replace(":", "-")
-    device = (entry.get("device") or "").replace("/", "_")
-    pdf_name = f"certificate_{device}_{timestamp}.pdf"
-    pdf_path = os.path.join(CERT_DIR, pdf_name)
-
-    c = canvas.Canvas(pdf_path, pagesize=A4)
-
-    c.setFont("Helvetica-Bold", 20)
-    c.drawString(50, 800, "LÖSCHZERTIFIKAT")
-
-    c.setFont("Helvetica", 12)
-    c.drawString(50, 760, f"Erstellt am:       {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    c.drawString(50, 740, f"Löschdatum:        {entry.get('timestamp', '')}")
-    c.drawString(50, 720, f"Gerät:             {entry.get('device', '')}")
-    c.drawString(50, 700, f"Modell:            {entry.get('model', '')}")
-    c.drawString(50, 680, f"Seriennummer:      {entry.get('serial', '')}")
-    c.drawString(50, 660, f"Größe:             {entry.get('size', '')}")
-    c.drawString(50, 640, f"Aktion:            {entry.get('aktion', '')}")
-    c.drawString(50, 620, f"FIO:               {entry.get('fio_text', '–')}")
-    c.drawString(50, 600, f"Secure Erase:      {entry.get('erase_text', '–')}")
-
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(50, 560, "Ausgeführter Befehl:")
-
-    c.setFont("Helvetica", 10)
-    c.drawString(50, 540, entry.get("befehl", ""))
-
-    c.line(50, 510, 550, 510)
-
-    c.setFont("Helvetica-Oblique", 11)
-    c.drawString(50, 490, "Hinweis:")
-    c.drawString(50, 470, "Dieses Zertifikat wurde automatisch von der")
-    c.drawString(50, 455, "FLS36 Festplatten-Löschstation generiert.")
-
-    c.showPage()
-    c.save()
-
-    return pdf_path
+def _safe_number(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
-def read_log():
+def _bool_to_text(value) -> str:
+    if value is True or value == "True":
+        return "OK"
+    if value is False or value == "False":
+        return "Fehler"
+    return "–"
+
+
+def _format_fio_text(entry: Dict) -> str:
+    mb = _safe_number(entry.get("fio_mb"))
+    iops = _safe_number(entry.get("fio_iops"))
+    lat = _safe_number(entry.get("fio_lat"))
+    parts = [
+        f"{mb:.2f} MB/s" if mb is not None else "MB/s: –",
+        f"{iops:.0f} IOPS" if iops is not None else "IOPS: –",
+        f"{lat:.3f} ms" if lat is not None else "Latenz: –",
+    ]
+    ok_text = _bool_to_text(entry.get("fio_ok"))
+    parts.append(f"Status: {ok_text}")
+    return " | ".join(parts)
+
+
+def _format_erase_text(entry: Dict) -> str:
+    ok_text = _bool_to_text(entry.get("erase_ok"))
+    method = entry.get("erase_method") or "–"
+    timestamp = entry.get("timestamp") or ""
+    parts = [f"Methode: {method}", f"Status: {ok_text}"]
+    if timestamp:
+        parts.append(f"Zeit: {timestamp}")
+    return " | ".join(parts)
+
+
+def _wrap_text(c: canvas.Canvas, text: str, x: int, y: int, width: int, line_height: int) -> int:
+    line = ""
+    for word in text.split():
+        test = (line + " " + word).strip()
+        if c.stringWidth(test, "Helvetica", 10) > width:
+            c.drawString(x, y, line)
+            y -= line_height
+            line = word
+        else:
+            line = test
+    if line:
+        c.drawString(x, y, line)
+        y -= line_height
+    return y
+
+
+# --- Datenquellen --------------------------------------------------------
+
+def read_log_entries() -> List[Dict]:
+    ensure_dirs()
     if not os.path.exists(LOG_FILE):
-        print("Keine Log-Datei vorhanden.")
         return []
 
-    entries = []
+    entries: List[Dict] = []
     with open(LOG_FILE, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter=";")
         for row in reader:
@@ -86,32 +93,8 @@ def read_log():
     return entries
 
 
-def _format_status_text(dev: Dict) -> Tuple[str, str]:
-    fio_ok = dev.get("fio_ok")
-    erase_ok = dev.get("erase_ok")
-    fio_bw = dev.get("fio_bw") if dev.get("fio_bw") is not None else "–"
-    fio_iops = dev.get("fio_iops") if dev.get("fio_iops") is not None else "–"
-    fio_lat = dev.get("fio_lat") if dev.get("fio_lat") is not None else "–"
-    fio_text = f"{fio_bw} MB/s, {fio_iops} IOPS, {fio_lat} ms"
-    if fio_ok is True:
-        fio_text += " (OK)"
-    elif fio_ok is False:
-        fio_text += " (Fehler)"
-    erase_text = "–"
-    timestamp = dev.get("erase_timestamp")
-    method = dev.get("erase_method")
-    if erase_ok is True:
-        erase_text = "OK"
-    elif erase_ok is False:
-        erase_text = "Fehler"
-    if method:
-        erase_text = f"{erase_text} ({method})" if erase_text != "–" else method
-    if timestamp:
-        erase_text = f"{erase_text} @ {timestamp}" if erase_text != "–" else timestamp
-    return fio_text, erase_text
-
-
-def read_snapshot_entries():
+def read_snapshot_entries() -> List[Dict]:
+    ensure_dirs()
     if not os.path.exists(SNAPSHOT_FILE):
         return []
     try:
@@ -120,47 +103,106 @@ def read_snapshot_entries():
     except (OSError, json.JSONDecodeError):
         return []
 
-    exported_at = data.get("exported_at") or datetime.now().isoformat()
-    entries = []
+    exported_at = data.get("exported_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    entries: List[Dict] = []
     for dev in data.get("devices", []):
-        fio_text, erase_text = _format_status_text(dev)
         entries.append(
             {
-                "timestamp": exported_at,
-                "aktion": "Gerätestatus",
-                "device": dev.get("device", ""),
+                "timestamp": dev.get("erase_timestamp") or exported_at,
                 "bay": dev.get("bay", dev.get("device", "")),
-                "path": dev.get("path", ""),
+                "device_path": dev.get("path", ""),
                 "size": dev.get("size", ""),
                 "model": dev.get("model", ""),
                 "serial": dev.get("serial", ""),
                 "transport": dev.get("transport", ""),
-                "befehl": f"FIO={fio_text} | SecureErase={erase_text}",
-                "fio_text": fio_text,
-                "erase_text": erase_text,
+                "fio_mb": dev.get("fio_bw"),
+                "fio_iops": dev.get("fio_iops"),
+                "fio_lat": dev.get("fio_lat"),
+                "fio_ok": dev.get("fio_ok"),
+                "erase_method": dev.get("erase_method", ""),
+                "erase_standard": dev.get("erase_standard", ""),
+                "erase_ok": dev.get("erase_ok"),
+                "command": dev.get("command", ""),
             }
         )
     return entries
 
 
+# --- PDF-Erzeugung -------------------------------------------------------
+
+def create_pdf(entry: Dict) -> str:
+    ensure_dirs()
+    timestamp = (entry.get("timestamp") or "").replace(":", "-").replace(" ", "_")
+    device = entry.get("device_path") or entry.get("bay") or "unbekannt"
+    device_safe = device.replace("/", "_")
+    pdf_name = f"certificate_{device_safe}_{timestamp}.pdf"
+    pdf_path = os.path.join(cert_dir, pdf_name)
+
+    c = canvas.Canvas(pdf_path, pagesize=A4)
+    width, height = A4
+
+    c.setFont("Helvetica-Bold", 22)
+    c.drawString(50, height - 60, "LÖSCHZERTIFIKAT")
+
+    c.setFont("Helvetica", 12)
+    y = height - 100
+    c.drawString(50, y, f"Löschdatum:        {entry.get('timestamp', '')}")
+    y -= 20
+    c.drawString(50, y, f"Bay / Pfad:        {entry.get('bay', '')} / {entry.get('device_path', '')}")
+    y -= 20
+    c.drawString(50, y, f"Modell:            {entry.get('model', '')}")
+    y -= 20
+    c.drawString(50, y, f"Seriennummer:      {entry.get('serial', '')}")
+    y -= 20
+    c.drawString(50, y, f"Größe / Transport: {entry.get('size', '')} / {entry.get('transport', '')}")
+    y -= 20
+    c.drawString(50, y, f"FIO Ergebnisse:    {_format_fio_text(entry)}")
+    y -= 20
+    c.drawString(50, y, f"Erase Methode:     {_format_erase_text(entry)}")
+    y -= 20
+    c.drawString(50, y, f"Löschstandard:     {entry.get('erase_standard','–')}")
+    y -= 40
+
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(50, y, "Befehl(e):")
+    y -= 20
+    c.setFont("Helvetica", 10)
+    command = entry.get("command", "")
+    y = _wrap_text(c, command, 50, y, int(width - 80), 14)
+
+    c.line(50, y - 10, width - 50, y - 10)
+    y -= 40
+
+    c.setFont("Helvetica-Oblique", 11)
+    c.drawString(50, y, "Hinweis:")
+    y -= 16
+    c.setFont("Helvetica", 10)
+    c.drawString(50, y, "Dieses Zertifikat wurde automatisch von der FLS36 Festplatten-Löschstation generiert.")
+    y -= 14
+    c.drawString(50, y, "Die Verantwortung für Auswahl und Durchführung der Löschmethode liegt beim Bediener.")
+
+    c.showPage()
+    c.save()
+    return pdf_path
+
+
+# --- Main ----------------------------------------------------------------
+
 def main():
     ensure_dirs()
-    entries: List[Dict] = read_snapshot_entries()
+    entries = read_log_entries()
     if not entries:
-        entries = read_log()
+        entries = read_snapshot_entries()
 
     if not entries:
         print("Keine Log-Einträge gefunden.")
-    else:
-        print(f"{len(entries)} Einträge gefunden – Zertifikate werden erstellt...")
+        return
 
+    print(f"{len(entries)} Einträge gefunden – Zertifikate werden erstellt...")
     for entry in entries:
-        path = create_pdf(entry)
-        print("PDF erstellt:", path)
-
-    # Ordner öffnen
-    print("Öffne Ordner:", LOG_DIR)
-    subprocess.Popen(["xdg-open", LOG_DIR])
+        pdf_path = create_pdf(entry)
+        print(f"PDF erstellt: {pdf_path}")
+    print(f"Zertifikate gespeichert in: {cert_dir}")
 
 
 if __name__ == "__main__":

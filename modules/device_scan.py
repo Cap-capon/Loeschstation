@@ -108,6 +108,7 @@ def scan_linux_disks() -> List[Dict]:
                 "erase_ok": None,
                 "erase_timestamp": None,
                 "erase_method": None,
+                "command": None,
                 # eindeutiger Schlüssel für Zertifikate/Tabellenupdates
                 "device_id": path,
             }
@@ -166,6 +167,7 @@ def scan_megaraid_devices() -> List[Dict]:
                     "erase_ok": None,
                     "erase_timestamp": None,
                     "erase_method": None,
+                    "command": None,
                     "device_id": f"{virtual_path}",
                 }
             )

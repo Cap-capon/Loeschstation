@@ -1,4 +1,5 @@
 import datetime
+import datetime
 import shlex
 import subprocess
 from typing import Dict, List
@@ -46,24 +47,24 @@ def execute_commands(commands: List[List[str]]) -> Dict:
     if not pw:
         raise RuntimeError("sudo-Passwort nicht konfiguriert")
 
-    pw_safe = shlex.quote(pw)
     all_ok = True
+    executed_commands: List[str] = []
     for cmd in commands:
+        joined = " ".join(shlex.quote(part) for part in cmd)
+        executed_commands.append(joined)
         try:
-            joined = " ".join(shlex.quote(part) for part in cmd)
-            subprocess.Popen(
-                [
-                    "gnome-terminal",
-                    "--",
-                    "bash",
-                    "-lc",
-                    f"echo {pw_safe} | sudo -S {joined}; exec bash",
-                ]
+            proc = subprocess.run(
+                ["sudo", "-S", *cmd],
+                input=pw + "\n",
+                capture_output=True,
+                text=True,
             )
+            if proc.returncode != 0:
+                all_ok = False
         except FileNotFoundError:
-            # Terminal nicht verfügbar → als Fehler markieren, aber Schleife fortsetzen
             all_ok = False
     return {
         "ok": all_ok,
         "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "command": " && ".join(executed_commands),
     }

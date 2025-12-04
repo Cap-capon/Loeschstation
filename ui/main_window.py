@@ -37,7 +37,7 @@ from modules import (
 )
 from modules import config_manager
 from modules.config_manager import load_config, save_config
-from modules.logs import StatusLogger, setup_debug_logger
+from modules.logs import StatusLogger, append_wipe_log, setup_debug_logger
 from modules.expert_mode import ExpertMode
 from modules import icons
 from ui.settings_window import SettingsWindow
@@ -81,7 +81,7 @@ class MainWindow(QMainWindow):
         left.setLayout(left_layout)
 
         self.device_table = QTableWidget()
-        self.device_table.setColumnCount(13)
+        self.device_table.setColumnCount(14)
         self.device_table.setHorizontalHeaderLabels([
             "Bay",
             "Pfad",
@@ -91,10 +91,11 @@ class MainWindow(QMainWindow):
             "Transport",
             "FIO MB/s",
             "FIO IOPS",
-            "FIO Lat (ms)",
+            "FIO Latenz(ms)",
             "FIO OK",
+            "Erase Methode",
             "Erase OK",
-            "Erase Zeitstempel",
+            "Timestamp",
             "Löschstandard",
         ])
         self.device_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -180,18 +181,18 @@ class MainWindow(QMainWindow):
     def _load_icon(self, path: str) -> QIcon:
         """Lädt Icons aus Dateien oder Symbol-Themes."""
 
-        if path and os.path.exists(path):
-            return QIcon(path)
-        if path:
-            # Fallback: relative Pfade (img/...) auf Projektverzeichnis mappen
-            candidate = os.path.join(os.path.dirname(__file__), "..", path)
-            if os.path.exists(candidate):
-                return QIcon(candidate)
-        if path:
-            theme_icon = QIcon.fromTheme(path)
-            if not theme_icon.isNull():
-                return theme_icon
-        return QIcon()
+        if path and (path.endswith(".svg") or os.path.sep in path):
+            abs_path = path
+            if not os.path.isabs(path):
+                abs_path = os.path.join(os.path.dirname(__file__), "..", path)
+            if os.path.exists(abs_path):
+                return QIcon(abs_path)
+
+        icon = QIcon.fromTheme(path)
+        if not icon.isNull():
+            return icon
+
+        return QIcon.fromTheme("drive-harddisk")
 
     def _create_tile_button(self, text: str, func, icon_path: str | None = None) -> QPushButton:
         btn = QPushButton(text)
@@ -280,6 +281,31 @@ class MainWindow(QMainWindow):
         except OSError as exc:  # pragma: no cover - defensive
             self.debug_logger.error("Geräteliste konnte nicht exportiert werden: %s", exc)
 
+    # --- Logging der Testergebnisse / Löschvorgänge -----------------------
+    def _log_device_event(self, device: Dict, data: Dict) -> None:
+        timestamp = data.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        entry = {
+            "timestamp": timestamp,
+            "bay": device.get("bay") or device.get("device"),
+            "device_path": device.get("path") or device.get("device"),
+            "size": device.get("size", ""),
+            "model": device.get("model", ""),
+            "serial": device.get("serial", ""),
+            "transport": device.get("transport", ""),
+            "fio_mb": data.get("fio_bw", device.get("fio_bw")),
+            "fio_iops": data.get("fio_iops", device.get("fio_iops")),
+            "fio_lat": data.get("fio_lat", device.get("fio_lat")),
+            "fio_ok": data.get("fio_ok", device.get("fio_ok")),
+            "erase_method": data.get("erase_method", device.get("erase_method", "")),
+            "erase_standard": data.get("erase_standard", device.get("erase_standard", "")),
+            "erase_ok": data.get("erase_ok", device.get("erase_ok")),
+            "command": data.get("command") or device.get("command") or "",
+        }
+        try:
+            append_wipe_log(entry)
+        except Exception as exc:  # pragma: no cover - defensive
+            self.debug_logger.error("Log-Eintrag fehlgeschlagen: %s", exc)
+
     def _reload_devices(self):
         show_system = self.config.get("show_system_disks", False) or self.expert_mode.enabled
         scanned = device_scan.scan_all_devices(show_system_disks=show_system)
@@ -306,8 +332,14 @@ class MainWindow(QMainWindow):
                     "erase_ok",
                     "erase_timestamp",
                     "erase_method",
+                    "erase_standard",
+                    "command",
                 ):
-                    if key in previous_entry and normalized.get(key) is None:
+                    if key in previous_entry and (normalized.get(key) is None or normalized.get(key) == ""):
+                        normalized[key] = previous_entry.get(key)
+
+                for key in ("model", "serial", "transport"):
+                    if not normalized.get(key) and previous_entry.get(key):
                         normalized[key] = previous_entry.get(key)
 
             devices.append(normalized)
@@ -343,12 +375,15 @@ class MainWindow(QMainWindow):
                     "fio_iops",
                     "fio_lat",
                     "fio_ok",
+                    "erase_method",
                     "erase_ok",
                     "erase_timestamp",
-                    "erase_method",
+                    "erase_standard",
                 ]
             ):
                 value = dev.get(key, "")
+                if key == "erase_standard" and not value:
+                    value = dev.get("erase_method", "")
                 if isinstance(value, bool):
                     display = "OK" if value else "Fehler"
                 elif isinstance(value, float):
@@ -482,16 +517,15 @@ class MainWindow(QMainWindow):
             if left_state:
                 self.left_splitter.restoreState(QByteArray.fromHex(str(left_state).encode()))
 
+        header_state = self.config.get("table_header_state")
+        if header_state:
+            ba = QByteArray.fromHex(str(header_state).encode("ascii"))
+            self.device_table.horizontalHeader().restoreState(ba)
+
         widths = self.config.get("table_column_widths") or []
         for idx, width in enumerate(widths):
             if idx < self.device_table.columnCount() and width:
                 self.device_table.setColumnWidth(idx, width)
-
-        header_state = self.config.get("table_header_state")
-        if header_state:
-            self.device_table.horizontalHeader().restoreState(
-                QByteArray.fromHex(str(header_state).encode())
-            )
 
         sort_cfg = self.config.get("table_sort") or {}
         column = sort_cfg.get("column", 0)
@@ -517,17 +551,22 @@ class MainWindow(QMainWindow):
                 commands = planner.build_commands(dev_for_cmd)
                 result = secure_erase.execute_commands(commands)
                 method = self._erase_method_label(dev_for_cmd)
+                updates = {
+                    "erase_ok": result.get("ok"),
+                    "erase_timestamp": result.get("timestamp"),
+                    "erase_method": method,
+                    "erase_standard": method,
+                    "command": result.get("command"),
+                    "timestamp": result.get("timestamp"),
+                }
                 self._apply_device_updates(
                     dev,
-                    {
-                        "erase_ok": result.get("ok"),
-                        "erase_timestamp": result.get("timestamp"),
-                        "erase_method": method,
-                    },
+                    updates,
                 )
                 self.status_logger.success(
                     f"Secure Erase gestartet für {dev['device']} – OK={result.get('ok')}"
                 )
+                self._log_device_event(dev, updates)
             self._populate_table()
         except RuntimeError as exc:
             self._handle_runner_error(exc)
@@ -552,12 +591,23 @@ class MainWindow(QMainWindow):
                         "fio_iops": round(result.get("iops"), 2) if result.get("iops") is not None else None,
                         "fio_lat": round(result.get("lat_ms"), 3) if result.get("lat_ms") is not None else None,
                         "fio_ok": result.get("ok"),
+                        "command": result.get("command"),
                     },
                 )
                 self.status_logger.info(
                     f"INFO: FIO-Ergebnis für {dev['device']} – "
                     f"{result.get('bw_mb_s', '–')} MB/s, {result.get('iops', '–')} IOPS, "
                     f"{result.get('lat_ms', '–')} ms, OK={result.get('ok')}"
+                )
+                self._log_device_event(
+                    dev,
+                    {
+                        "fio_bw": result.get("bw_mb_s"),
+                        "fio_iops": result.get("iops"),
+                        "fio_lat": result.get("lat_ms"),
+                        "fio_ok": result.get("ok"),
+                        "command": result.get("command"),
+                    },
                 )
             self._populate_table()
         except RuntimeError as exc:
@@ -656,12 +706,16 @@ class MainWindow(QMainWindow):
                     "erase_ok": result.get("ok"),
                     "erase_timestamp": result.get("timestamp"),
                     "erase_method": result.get("method"),
+                    "erase_standard": result.get("erase_standard", result.get("method")),
+                    "command": result.get("command"),
+                    "timestamp": result.get("timestamp"),
                 }
                 self._apply_device_updates(dev, updates)
                 target = result.get("target") or dev.get("target") or dev.get("device")
                 self.status_logger.info(
                     f"Badblocks abgeschlossen ({mode}) auf {dev['device']} ({target}) – OK={result.get('ok')}"
                 )
+                self._log_device_event(dev, updates)
             self._populate_table()
         except RuntimeError as exc:
             self._handle_runner_error(exc)
@@ -674,8 +728,23 @@ class MainWindow(QMainWindow):
         if not devices:
             return
         try:
-            targets = nwipe_runner.run_nwipe(devices)
+            result = nwipe_runner.run_nwipe(devices)
+            targets = result.get("targets", [])
+            erase_result = result.get("erase_result", {})
             self.status_logger.info(f"Nwipe gestartet auf {', '.join(targets)}")
+            command = erase_result.get("command") or f"nwipe --sync --verify=last {' '.join(targets)}"
+            timestamp = erase_result.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for dev in devices:
+                self._log_device_event(
+                    dev,
+                    {
+                        "erase_method": erase_result.get("erase_method", "Nwipe"),
+                        "erase_standard": erase_result.get("erase_standard", erase_result.get("erase_method")),
+                        "erase_ok": erase_result.get("erase_ok"),
+                        "command": command,
+                        "timestamp": timestamp,
+                    },
+                )
         except RuntimeError as exc:
             self._handle_runner_error(exc)
 
@@ -747,7 +816,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, title, pretty)
 
     def launch_cert_gui(self):
-        script = os.path.join(os.getcwd(), "certificates", "export_certificates_gui.py")
+        script = os.path.expanduser("~/script/Löschstation/certificates/export_certificates_gui.py")
         subprocess.Popen(["python3", script])
 
     def open_log_folder(self):

@@ -1,7 +1,8 @@
 import json
 import logging
+import re
 import subprocess
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from modules import config_manager
 
@@ -76,6 +77,7 @@ def list_controllers() -> List[Dict]:
 
 def list_physical_drives(controller_id: int) -> List[Dict]:
     data = _run_storcli_json([f"/c{controller_id}", "show", "all", "J"])
+    detail_map = _collect_pd_details(controller_id)
     drives: List[Dict] = []
     controllers = data.get("Controllers", []) or []
     if not controllers:
@@ -100,7 +102,9 @@ def list_physical_drives(controller_id: int) -> List[Dict]:
             or ""
         )
         model = entry.get("Model", "")
-        detail = _get_pd_details(controller_id, eid, slot)
+        detail = detail_map.get((eid, slot))
+        if not detail:
+            detail = _get_pd_details(controller_id, eid, slot)
         if detail:
             serial = detail.get("serial") or serial
             model = detail.get("model") or model
@@ -157,6 +161,88 @@ def _parse_eid_slot(entry: Dict) -> (Optional[int], Optional[int]):
     return None, None
 
 
+def _collect_pd_details(controller_id: int) -> Dict[Tuple[Optional[int], Optional[int]], Dict[str, str]]:
+    """
+    Liest alle PD-Details in einem Aufruf (/cX /eall /sall show all J) und
+    mappt Seriennummer und Modell auf (EID, Slot).
+    """
+
+    details: Dict[Tuple[Optional[int], Optional[int]], Dict[str, str]] = {}
+    try:
+        data = _run_storcli_json([f"/c{controller_id}", "/eall", "/sall", "show", "all", "J"])
+    except Exception:
+        return details
+
+    controllers = data.get("Controllers", []) or []
+    if not controllers:
+        return details
+
+    resp = (controllers[0] or {}).get("Response Data", {}) or {}
+    for key, value in resp.items():
+        if not isinstance(value, dict):
+            continue
+
+        eid, slot = _parse_eid_slot(value)
+        if (eid is None or slot is None) and isinstance(key, str):
+            match = re.search(r"/e(\d+)/s(\d+)", key, re.IGNORECASE)
+            if match:
+                eid = _safe_int(match.group(1))
+                slot = _safe_int(match.group(2))
+
+        if eid is None or slot is None:
+            continue
+
+        serial, model = _extract_serial_and_model(value)
+        if serial or model:
+            details[(eid, slot)] = {"serial": str(serial or ""), "model": str(model or "")}
+
+    return details
+
+
+def _extract_serial_and_model(value: Dict) -> Tuple[str, str]:
+    serial = value.get("SN") or value.get("S/N") or value.get("Serial Number") or ""
+    model = value.get("Model") or value.get("MODEL") or ""
+
+    if not serial:
+        inquiry = value.get("Inquiry Data") or value.get("Inquiry")
+        if isinstance(inquiry, dict):
+            serial = inquiry.get("SN") or inquiry.get("Serial Number") or inquiry.get("SerialNumber") or ""
+            if not model:
+                model = inquiry.get("Model") or inquiry.get("MODEL") or inquiry.get("Model Number") or ""
+        elif isinstance(inquiry, str):
+            match = re.search(r"([Ss][Nn]|Serial)[^A-Za-z0-9]*([A-Za-z0-9]{4,})", inquiry)
+            if match:
+                serial = match.group(2)
+
+    if not serial:
+        for key, nested in value.items():
+            if isinstance(nested, dict) and "Device attributes" in key:
+                serial = nested.get("SN") or nested.get("Serial Number") or nested.get("S/N") or ""
+                if not model:
+                    model = nested.get("Model") or nested.get("MODEL") or ""
+                if serial:
+                    break
+
+    if not serial:
+        for nested_value in value.values():
+            if isinstance(nested_value, str):
+                match = re.search(r"([Ss][Nn]|Serial)[^A-Za-z0-9]*([A-Za-z0-9]{4,})", nested_value)
+                if match:
+                    serial = match.group(2)
+                    break
+            if isinstance(nested_value, dict):
+                for inner in nested_value.values():
+                    if isinstance(inner, str):
+                        match = re.search(r"([Ss][Nn]|Serial)[^A-Za-z0-9]*([A-Za-z0-9]{4,})", inner)
+                        if match:
+                            serial = match.group(2)
+                            break
+                if serial:
+                    break
+
+    return str(serial or ""), str(model or "")
+
+
 def _safe_int(value) -> Optional[int]:
     try:
         return int(str(value))
@@ -205,8 +291,7 @@ def _get_pd_details(controller_id: int, eid: int, slot: int) -> Dict[str, str]:
     for key, value in resp.items():
         if not isinstance(value, dict):
             continue
-        serial = value.get("SN") or value.get("S/N") or value.get("Serial Number")
-        model = value.get("Model") or value.get("MODEL")
+        serial, model = _extract_serial_and_model(value)
         if serial or model:
             return {"serial": str(serial or ""), "model": str(model or "")}
     return {"serial": "", "model": ""}
