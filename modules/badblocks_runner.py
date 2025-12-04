@@ -1,4 +1,3 @@
-import shlex
 import datetime
 import subprocess
 from typing import Dict
@@ -21,9 +20,15 @@ def _resolve_megaraid_path(dev: Dict) -> str:
     linux_devices = device_scan.scan_linux_disks()
     target_size = dev.get("size", "")
     target_model = dev.get("model", "")
+    target_serial = dev.get("serial", "")
     for candidate in linux_devices:
-        if candidate.get("size", "") == target_size and candidate.get("model", "") == target_model:
-            return candidate.get("path") or candidate.get("device", "")
+        if candidate.get("size", "") != target_size:
+            continue
+        if target_model and candidate.get("model", "") != target_model:
+            continue
+        if target_serial and candidate.get("serial", "") != target_serial:
+            continue
+        return candidate.get("path") or candidate.get("device", "")
     raise RuntimeError("Badblocks: MegaRAID-Device konnte nicht aufgelöst werden")
 
 
@@ -43,26 +48,27 @@ def run_badblocks(dev: Dict, mode: str) -> Dict:
     if not pw:
         raise RuntimeError("sudo-Passwort nicht konfiguriert")
 
-    pw_safe = shlex.quote(pw)
-    cmd_str = " ".join(shlex.quote(part) for part in args + [target])
-    # Terminal-Ausführung erlaubt parallele Jobs; Ergebnis wird über Rückgabe erfasst
-    terminal_cmd = [
-        "gnome-terminal",
-        "--",
-        "bash",
-        "-lc",
-        f"echo {pw_safe} | sudo -S {cmd_str}; exec bash",
-    ]
-    ok = True
+    cmd = ["sudo", "-S", *args, target]
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
-        subprocess.Popen(terminal_cmd)
+        proc = subprocess.run(
+            cmd,
+            input=pw + "\n",
+            capture_output=True,
+            text=True,
+        )
     except FileNotFoundError as exc:
-        ok = False
         raise RuntimeError(f"badblocks nicht gefunden: {exc}")
 
+    ok = proc.returncode == 0
+    method = "Badblocks Destructive" if mode == "destructive" else "Badblocks Read-Only"
     return {
         "ok": ok,
-        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "method": "Badblocks Destructive" if mode == "destructive" else "Badblocks Read-Only",
+        "timestamp": timestamp,
+        "method": method,
+        "erase_standard": method,
         "target": target,
+        "command": " ".join(cmd),
+        "stdout": proc.stdout or "",
+        "stderr": proc.stderr or "",
     }

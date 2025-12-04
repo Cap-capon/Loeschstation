@@ -1,7 +1,8 @@
+import csv
 import logging
 import os
 from logging.handlers import RotatingFileHandler
-from typing import Callable
+from typing import Callable, Dict
 
 from modules import config_manager
 
@@ -37,3 +38,47 @@ def setup_debug_logger(config: dict) -> logging.Logger:
     else:
         logger.addHandler(logging.NullHandler())
     return logger
+
+
+def _wipe_log_path() -> str:
+    config = config_manager.load_config()
+    log_dir = config.get("log_dir", config_manager.DEFAULT_CONFIG["log_dir"])
+    os.makedirs(log_dir, exist_ok=True)
+    return os.path.join(log_dir, "wipe_log.csv")
+
+
+def append_wipe_log(entry: Dict) -> None:
+    """Schreibt einen Eintrag in wipe_log.csv (Semikolon-getrennt)."""
+
+    path = _wipe_log_path()
+    fieldnames = [
+        "timestamp",
+        "bay",
+        "device_path",
+        "size",
+        "model",
+        "serial",
+        "transport",
+        "fio_mb",
+        "fio_iops",
+        "fio_lat",
+        "fio_ok",
+        "erase_method",
+        "erase_standard",
+        "erase_ok",
+        "command",
+    ]
+
+    exists = os.path.exists(path)
+    with open(path, "a", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, delimiter=";", fieldnames=fieldnames)
+        if not exists:
+            writer.writeheader()
+        sanitized = {}
+        for key in fieldnames:
+            value = entry.get(key, "")
+            if isinstance(value, bool):
+                sanitized[key] = "True" if value else "False"
+            else:
+                sanitized[key] = "" if value is None else value
+        writer.writerow(sanitized)

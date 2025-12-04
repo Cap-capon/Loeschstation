@@ -75,8 +75,9 @@ def run_preset_with_result(device: str, preset: str) -> Dict:
     if not pw:
         raise RuntimeError("sudo-Passwort nicht konfiguriert")
 
+    cmd = ["sudo", "-S", *args]
     proc = subprocess.run(
-        ["sudo", "-S", *args],
+        cmd,
         input=pw + "\n",
         capture_output=True,
         text=True,
@@ -85,6 +86,7 @@ def run_preset_with_result(device: str, preset: str) -> Dict:
     stdout = proc.stdout or ""
     result = _parse_fio_output(stdout)
     result["ok"] = is_fio_result_ok(result, proc.returncode)
+    result["command"] = " ".join(cmd)
     return result
 
 
@@ -125,19 +127,61 @@ def _parse_fio_output(stdout: str) -> Dict:
     job = jobs[0] or {}
     read = job.get("read", {}) or {}
     write = job.get("write", {}) or {}
-    # Bevorzugt den Read-Teil, fällt aber auf Write zurück, falls leer
-    stats = read if read.get("bw") else write
-    bw_kib = stats.get("bw")
-    iops = stats.get("iops")
-    lat_ns = (stats.get("lat_ns") or {}).get("mean")
 
-    if bw_kib is not None:
-        metrics["bw_mb_s"] = float(bw_kib) / 1024.0
+    stats = _choose_stats(read, write)
+    bw_mb_s = _extract_bandwidth_mb(stats)
+    iops = stats.get("iops")
+    lat_ms = _extract_latency_ms(stats)
+
+    if bw_mb_s is not None:
+        metrics["bw_mb_s"] = bw_mb_s
     if iops is not None:
         metrics["iops"] = float(iops)
-    if lat_ns is not None:
-        metrics["lat_ms"] = float(lat_ns) / 1_000_000.0
+    if lat_ms is not None:
+        metrics["lat_ms"] = lat_ms
     return metrics
+
+
+def _choose_stats(read: Dict, write: Dict) -> Dict:
+    if read.get("bw") or read.get("bw_bytes"):
+        return read
+    if write.get("bw") or write.get("bw_bytes"):
+        return write
+    # Rückfall: wenn Werte fehlen, nimm Read-Teil
+    return read or write or {}
+
+
+def _extract_bandwidth_mb(stats: Dict) -> float | None:
+    if not stats:
+        return None
+    bw_bytes = stats.get("bw_bytes")
+    if bw_bytes is not None:
+        try:
+            return float(bw_bytes) / 1_000_000.0
+        except (TypeError, ValueError):
+            return None
+    bw_kib = stats.get("bw")
+    if bw_kib is not None:
+        try:
+            return float(bw_kib) / 1024.0
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _extract_latency_ms(stats: Dict) -> float | None:
+    lat_sources = ["clat_ns", "lat_ns", "lat"]
+    for key in lat_sources:
+        lat_block = stats.get(key) or {}
+        mean_val = lat_block.get("mean") if isinstance(lat_block, dict) else None
+        if mean_val is not None:
+            try:
+                # clat/lat_ns liefert Nanosekunden, lat liefert meist Mikro-/Milli
+                factor = 1_000_000.0 if "ns" in key else 1_000.0
+                return float(mean_val) / factor
+            except (TypeError, ValueError):
+                return None
+    return None
 
 
 def _spawn_with_sudo(args: List[str]) -> None:

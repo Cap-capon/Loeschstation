@@ -4,14 +4,14 @@ import os
 BASE_IMG_DIR = os.path.join(os.path.dirname(__file__), "..", "img")
 
 # Dateibasierte Icons – explizit ohne Theme-Namen, damit alle Tiles konsistent
-ICON_SHREDOS = "img/shredOS_icon.svg"
+ICON_SHREDOS = "img/shredos_icon.svg"
 ICON_BLANCCO = "img/blancco_icon.svg"
-ICON_BAOBAB = "img/baobab.svg"
+ICON_BAOBAB = "baobab"
 ICON_GPARTED = "img/gparted.svg"
 ICON_PARTITIONMANAGER = "img/partitionmanager.svg"
 ICON_BLEACHBIT = "img/bleachbit.svg"
-ICON_FIO = "img/utilities-terminal.svg"
-ICON_BADBLOCKS = "img/media-removable.svg"
+ICON_FIO = "utilities-terminal"
+ICON_BADBLOCKS = "media-removable"
 
 # Theme-basierte Icons (Fallbacks bleiben bestehen)
 ICON_GSMART = "gsmartcontrol"

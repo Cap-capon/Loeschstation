@@ -1,3 +1,4 @@
+import datetime
 import logging
 import shlex
 import subprocess
@@ -28,7 +29,7 @@ def _resolve_target(dev: Dict) -> str:
     raise RuntimeError("Nwipe: Kein gültiger Gerätepfad gefunden")
 
 
-def run_nwipe(devices: List[Dict]) -> List[str]:
+def run_nwipe(devices: List[Dict]) -> Dict:
     pw = config_manager.get_sudo_password()
     if not pw:
         raise RuntimeError("sudo-Passwort nicht konfiguriert")
@@ -42,9 +43,9 @@ def run_nwipe(devices: List[Dict]) -> List[str]:
 
     pw_safe = shlex.quote(pw)
     target_args = " ".join(shlex.quote(t) for t in targets)
-    cmd = (
-        f"echo {pw_safe} | sudo -S nwipe --sync --verify=last {target_args}; exec bash"
-    )
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    command = f"nwipe --sync --verify=last {target_args}"
+    cmd = f"echo {pw_safe} | sudo -S {command}; exec bash"
     terminal_cmd = ["gnome-terminal", "--", "bash", "-lc", cmd]
     try:
         proc = subprocess.Popen(terminal_cmd)
@@ -52,4 +53,13 @@ def run_nwipe(devices: List[Dict]) -> List[str]:
     except FileNotFoundError as exc:
         raise RuntimeError(f"Nwipe konnte nicht gestartet werden: {exc}")
 
-    return targets
+    return {
+        "targets": targets,
+        "erase_result": {
+            "erase_method": "Nwipe (Default)",
+            "erase_standard": "Nwipe Default",
+            "erase_ok": None,
+            "timestamp": now,
+            "command": command,
+        },
+    }
