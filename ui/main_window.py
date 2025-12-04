@@ -155,7 +155,7 @@ class MainWindow(QMainWindow):
         try:
             raid_storcli.set_all_drives_to_jbod()
         except Exception as exc:  # pragma: no cover - defensive
-            self._append_status(f"StorCLI JBOD-Fehler: {exc}")
+            self._handle_jbod_exception(exc)
         self._reload_devices()
         self.device_table.selectionModel().selectionChanged.connect(self._update_action_buttons)
         self._update_action_buttons()
@@ -188,10 +188,10 @@ class MainWindow(QMainWindow):
 
     def _build_diagnostics_group(self) -> QGroupBox:
         buttons = [
-            self._create_tile_button("GSmartControl", smart_tools.open_gsmartcontrol, icons.ICON_GSMART),
-            self._create_tile_button("GNOME Disks", smart_tools.open_gnome_disks, icons.ICON_GNOME_DISKS),
-            self._create_tile_button("Partition Manager", smart_tools.open_partition_manager, icons.ICON_PARTITION),
-            self._create_tile_button("Speicheranalyse", smart_tools.open_baobab, icons.ICON_PARTITION),
+            self._create_tile_button("GSmartControl", self.run_gsmartcontrol, icons.ICON_GSMART),
+            self._create_tile_button("GNOME Disks", self.run_gnome_disks, icons.ICON_GNOME_DISKS),
+            self._create_tile_button("Partition Manager", self.run_partition_manager, icons.ICON_PARTITION),
+            self._create_tile_button("Speicheranalyse", self.run_baobab, icons.ICON_PARTITION),
             self._create_tile_button("SMART Scan (CLI)", self.run_smartctl_cli, icons.ICON_SMARTCLI),
             self._create_tile_button("NVMe Info", self.run_nvme_info, icons.ICON_NVMEINFO),
         ]
@@ -244,7 +244,8 @@ class MainWindow(QMainWindow):
         devices: List[Dict] = []
         for dev in scanned:
             normalized = dev.copy()
-            normalized["target"] = dev.get("path") or dev.get("device")
+            if "target" not in normalized:
+                normalized["target"] = dev.get("path") or dev.get("device")
             devices.append(normalized)
 
         self.devices = devices
@@ -281,6 +282,15 @@ class MainWindow(QMainWindow):
             if dev:
                 result.append(dev)
         return result
+
+    def _require_single_device(self) -> Dict | None:
+        devices = self._ensure_devices_selected()
+        if not devices:
+            return None
+        return devices[0]
+
+    def _device_target(self, dev: Dict) -> str:
+        return dev.get("target") or dev.get("path") or dev.get("device")
 
     def _ensure_devices_selected(self) -> List[Dict] | None:
         devices = self.selected_devices()
@@ -339,6 +349,12 @@ class MainWindow(QMainWindow):
         if "sudo-Passwort nicht konfiguriert" in message or "sudo-Authentifizierung fehlgeschlagen" in message:
             return "StorCLI: Sudo-Authentifizierung fehlgeschlagen (Passwort in den Einstellungen prüfen)"
         return f"StorCLI fehlgeschlagen: {message}"
+
+    def _handle_jbod_exception(self, exc: Exception) -> None:
+        if str(exc) == "storcli-jbod-unsupported":
+            self._append_status("JBOD auf Controller nicht unterstützt oder bereits gesetzt.")
+            return
+        self._append_status(f"StorCLI JBOD-Fehler: {exc}")
 
     def _restore_window_state(self) -> None:
         geometry_hex = self.config.get("window_geometry")
@@ -402,6 +418,50 @@ class MainWindow(QMainWindow):
         except RuntimeError as exc:
             self._handle_runner_error(exc)
 
+    def run_gsmartcontrol(self):
+        dev = self._require_single_device()
+        if dev is None:
+            return
+        target = self._device_target(dev)
+        try:
+            smart_tools.launch_gsmartcontrol(target)
+            self.status_logger.info(f"GSmartControl geöffnet für {dev['device']}")
+        except RuntimeError as exc:
+            self._handle_runner_error(exc)
+
+    def run_gnome_disks(self):
+        dev = self._require_single_device()
+        if dev is None:
+            return
+        target = self._device_target(dev)
+        try:
+            smart_tools.launch_gnome_disks(target)
+            self.status_logger.info(f"GNOME Disks geöffnet für {dev['device']}")
+        except RuntimeError as exc:
+            self._handle_runner_error(exc)
+
+    def run_partition_manager(self):
+        dev = self._require_single_device()
+        if dev is None:
+            return
+        target = self._device_target(dev)
+        try:
+            smart_tools.launch_gparted(target)
+            self.status_logger.info(f"Partition Manager geöffnet für {dev['device']}")
+        except RuntimeError as exc:
+            self._handle_runner_error(exc)
+
+    def run_baobab(self):
+        dev = self._require_single_device()
+        if dev is None:
+            return
+        target = self._device_target(dev)
+        try:
+            smart_tools.launch_baobab(target)
+            self.status_logger.info(f"Speicheranalyse gestartet für {dev['device']}")
+        except RuntimeError as exc:
+            self._handle_runner_error(exc)
+
     def run_smartctl_cli(self):
         devices = self._ensure_devices_selected()
         if not devices:
@@ -409,7 +469,7 @@ class MainWindow(QMainWindow):
         try:
             for dev in devices:
                 target = dev.get("target") or dev["device"]
-                smart_tools.run_smartctl(target)
+                smart_tools.launch_smart_cli(target)
                 self.status_logger.info(f"SMART Scan gestartet für {dev['device']}")
         except RuntimeError as exc:
             self._handle_runner_error(exc)
@@ -421,7 +481,7 @@ class MainWindow(QMainWindow):
         try:
             for dev in devices:
                 target = dev.get("target") or dev["device"]
-                smart_tools.run_nvme_smart(target)
+                smart_tools.launch_nvme_cli(target)
                 self.status_logger.info(f"NVMe Info gestartet für {dev['device']}")
         except RuntimeError as exc:
             self._handle_runner_error(exc)
@@ -459,9 +519,8 @@ class MainWindow(QMainWindow):
         devices = self._filter_erasable(devices)
         if not devices:
             return
-        targets = [dev.get("target") or dev["device"] for dev in devices]
         try:
-            nwipe_runner.run_nwipe(targets)
+            targets = nwipe_runner.run_nwipe(devices)
             self.status_logger.info(f"Nwipe gestartet auf {', '.join(targets)}")
         except RuntimeError as exc:
             self._handle_runner_error(exc)
@@ -523,7 +582,10 @@ class MainWindow(QMainWindow):
             self.status_logger.info("JBOD-Befehl ausgeführt")
         except Exception as exc:  # pragma: no cover - defensive
             self.status_logger.error(f"StorCLI JBOD-Fehler: {exc}")
-            self.status_label.setText(self._storcli_warning_text(exc))
+            if str(exc) == "storcli-jbod-unsupported":
+                self.status_label.setText("JBOD nicht unterstützt oder bereits aktiv")
+            else:
+                self.status_label.setText(self._storcli_warning_text(exc))
         self._reload_devices()
 
     def _show_json_dialog(self, title: str, data):
@@ -586,7 +648,7 @@ class MainWindow(QMainWindow):
         try:
             raid_storcli.set_all_drives_to_jbod()
         except Exception as exc:  # pragma: no cover - defensive
-            self._append_status(f"StorCLI JBOD-Fehler: {exc}")
+            self._handle_jbod_exception(exc)
         self._reload_devices()
 
     def _update_expert_visibility(self):
