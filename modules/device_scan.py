@@ -98,6 +98,14 @@ def scan_linux_disks() -> List[Dict]:
                 "mountpoints": sorted(list(mountpoints)),
                 "is_system": is_system,
                 "erase_allowed": False,
+                # Platzhalter für Testergebnisse
+                "fio_bw": None,
+                "fio_iops": None,
+                "fio_lat": None,
+                "fio_ok": None,
+                "erase_ok": None,
+                # eindeutiger Schlüssel für Zertifikate/Tabellenupdates
+                "device_id": path,
             }
         )
     return devices
@@ -143,6 +151,13 @@ def scan_megaraid_devices() -> List[Dict]:
                     "transport": f"storcli:{pd.get('intf', '')}",
                     "is_system": False,
                     "erase_allowed": True,
+                    # Testergebnisse folgen später aus dem UI
+                    "fio_bw": None,
+                    "fio_iops": None,
+                    "fio_lat": None,
+                    "fio_ok": None,
+                    "erase_ok": None,
+                    "device_id": f"{virtual_path}",
                 }
             )
     if not had_warning:

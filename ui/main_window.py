@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime
 from typing import List, Dict
 
 from PySide6.QtCore import Qt, QByteArray
@@ -79,14 +80,19 @@ class MainWindow(QMainWindow):
         left.setLayout(left_layout)
 
         self.device_table = QTableWidget()
-        self.device_table.setColumnCount(6)
+        self.device_table.setColumnCount(11)
         self.device_table.setHorizontalHeaderLabels([
-            "Device",
+            "Bay",
             "Pfad",
             "Größe",
             "Modell",
             "Seriennummer",
             "Transport",
+            "FIO MB/s",
+            "FIO IOPS",
+            "FIO Lat (ms)",
+            "FIO OK",
+            "Erase OK",
         ])
         self.device_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.device_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -101,11 +107,13 @@ class MainWindow(QMainWindow):
         self.btn_refresh.clicked.connect(self.on_refresh_clicked)
         btn_row.addWidget(self.btn_refresh)
 
-        self.btn_cert_gui = QPushButton("Zertifikate öffnen")
+        self.btn_cert_gui = QPushButton("Zertifikat (GUI)")
+        self.btn_cert_gui.setIcon(self._load_icon(icons.ICON_CERT_GUI))
         self.btn_cert_gui.clicked.connect(self.launch_cert_gui)
         btn_row.addWidget(self.btn_cert_gui)
 
         self.btn_open_logs = QPushButton("Log-Ordner öffnen")
+        self.btn_open_logs.setIcon(self._load_icon(icons.ICON_LOG_FOLDER))
         self.btn_open_logs.clicked.connect(self.open_log_folder)
         btn_row.addWidget(self.btn_open_logs)
 
@@ -147,6 +155,8 @@ class MainWindow(QMainWindow):
         right_layout.addStretch()
 
         self.main_splitter.addWidget(right)
+        self.main_splitter.setStretchFactor(0, 3)
+        self.main_splitter.setStretchFactor(1, 1)
 
         self._restore_window_state()
         self._update_expert_visibility()
@@ -161,12 +171,20 @@ class MainWindow(QMainWindow):
         self._update_action_buttons()
 
     def _load_icon(self, path: str) -> QIcon:
-        return QIcon(path) if path and os.path.exists(path) else QIcon()
+        """Lädt Icons aus Dateien oder Symbol-Themes."""
+
+        if path and os.path.exists(path):
+            return QIcon(path)
+        if path:
+            theme_icon = QIcon.fromTheme(path)
+            if not theme_icon.isNull():
+                return theme_icon
+        return QIcon()
 
     def _create_tile_button(self, text: str, func, icon_path: str | None = None) -> QPushButton:
         btn = QPushButton(text)
         btn.setMinimumHeight(60)
-        btn.setIcon(self._load_icon(icon_path or ""))
+        btn.setIcon(self._load_icon(icon_path or icons.ICON_DEFAULT))
         btn.setStyleSheet(
             "padding: 10px; border-radius: 4px; font-weight: 500;"
             "border: 1px solid #c0c0c0;"
@@ -190,8 +208,8 @@ class MainWindow(QMainWindow):
         buttons = [
             self._create_tile_button("GSmartControl", self.run_gsmartcontrol, icons.ICON_GSMART),
             self._create_tile_button("GNOME Disks", self.run_gnome_disks, icons.ICON_GNOME_DISKS),
-            self._create_tile_button("Partition Manager", self.run_partition_manager, icons.ICON_PARTITION),
-            self._create_tile_button("Speicheranalyse", self.run_baobab, icons.ICON_PARTITION),
+            self._create_tile_button("Partition Manager", self.run_partition_manager, icons.ICON_PARTITIONMANAGER),
+            self._create_tile_button("Speicheranalyse", self.run_baobab, icons.ICON_BAOBAB),
             self._create_tile_button("SMART Scan (CLI)", self.run_smartctl_cli, icons.ICON_SMARTCLI),
             self._create_tile_button("NVMe Info", self.run_nvme_info, icons.ICON_NVMEINFO),
         ]
@@ -238,25 +256,42 @@ class MainWindow(QMainWindow):
     def append_status(self, text: str) -> None:
         self._append_status(text)
 
+    def _export_device_snapshot(self) -> None:
+        """Exportiert die aktuellen Gerätedaten für Zertifikate/Prüfungen."""
+
+        log_dir = self.config.get("log_dir") or os.path.expanduser("~/loeschstation_logs")
+        os.makedirs(log_dir, exist_ok=True)
+        snapshot_path = os.path.join(log_dir, "devices_snapshot.json")
+        payload = {"exported_at": datetime.now().isoformat(), "devices": self.devices}
+        try:
+            with open(snapshot_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+        except OSError as exc:  # pragma: no cover - defensive
+            self.debug_logger.error("Geräteliste konnte nicht exportiert werden: %s", exc)
+
     def _reload_devices(self):
         show_system = self.config.get("show_system_disks", False) or self.expert_mode.enabled
         scanned = device_scan.scan_all_devices(show_system_disks=show_system)
+        previous = {d.get("device_id") or d.get("path"): d for d in getattr(self, "devices", [])}
         devices: List[Dict] = []
         for dev in scanned:
             normalized = dev.copy()
             if "target" not in normalized:
                 normalized["target"] = dev.get("path") or dev.get("device")
+            if "device_id" not in normalized or not normalized.get("device_id"):
+                normalized["device_id"] = normalized.get("path") or normalized.get("device")
+
+            # Vorherige Testergebnisse beibehalten, damit FIO/Erase nach Reload sichtbar bleiben
+            previous_entry = previous.get(normalized["device_id"])
+            if previous_entry:
+                for key in ("fio_bw", "fio_iops", "fio_lat", "fio_ok", "erase_ok"):
+                    if key in previous_entry and normalized.get(key) is None:
+                        normalized[key] = previous_entry.get(key)
+
             devices.append(normalized)
 
         self.devices = devices
-        self.device_table.setRowCount(0)
-        for row, dev in enumerate(devices):
-            self.device_table.insertRow(row)
-            for col, key in enumerate(["device", "path", "size", "model", "serial", "transport"]):
-                item = QTableWidgetItem(str(dev.get(key, "")))
-                if col == 0:
-                    item.setData(Qt.UserRole, dev)
-                self.device_table.setItem(row, col, item)
+        self._populate_table()
         widths = self.config.get("table_column_widths") or []
         if widths:
             for idx, width in enumerate(widths):
@@ -269,6 +304,45 @@ class MainWindow(QMainWindow):
         self.status_label.setText(device_scan.get_last_warning())
         self.status_logger.info(f"{len(devices)} Laufwerke geladen")
         self._update_action_buttons()
+
+    def _populate_table(self) -> None:
+        self.device_table.setRowCount(0)
+        for row, dev in enumerate(self.devices):
+            self.device_table.insertRow(row)
+            for col, key in enumerate(
+                [
+                    "device",
+                    "path",
+                    "size",
+                    "model",
+                    "serial",
+                    "transport",
+                    "fio_bw",
+                    "fio_iops",
+                    "fio_lat",
+                    "fio_ok",
+                    "erase_ok",
+                ]
+            ):
+                value = dev.get(key, "")
+                if isinstance(value, bool):
+                    display = "OK" if value else "Fehler"
+                else:
+                    display = "–" if value in (None, "") else str(value)
+                item = QTableWidgetItem(display)
+                if col == 0:
+                    item.setData(Qt.UserRole, dev)
+                self.device_table.setItem(row, col, item)
+        self._export_device_snapshot()
+
+    def _apply_device_updates(self, device: Dict, updates: Dict) -> None:
+        """Schreibt Testergebnisse in self.devices anhand der device_id."""
+
+        device_id = device.get("device_id") or device.get("path") or device.get("device")
+        for dev in self.devices:
+            if dev.get("device_id") == device_id:
+                dev.update(updates)
+                return
 
     def refresh_devices(self):
         self._reload_devices()
@@ -397,8 +471,12 @@ class MainWindow(QMainWindow):
                 dev_for_cmd = dev.copy()
                 dev_for_cmd["device"] = dev.get("target") or dev["device"]
                 commands = planner.build_commands(dev_for_cmd)
-                secure_erase.execute_commands(commands)
-                self.status_logger.success(f"Secure Erase gestartet für {dev['device']}")
+                result = secure_erase.execute_commands(commands)
+                self._apply_device_updates(dev, {"erase_ok": result.get("ok")})
+                self.status_logger.success(
+                    f"Secure Erase gestartet für {dev['device']} – OK={result.get('ok')}"
+                )
+            self._populate_table()
         except RuntimeError as exc:
             self._handle_runner_error(exc)
 
@@ -413,8 +491,23 @@ class MainWindow(QMainWindow):
         try:
             for dev in devices:
                 target = dev.get("target") or dev["device"]
-                fio_runner.run_preset(target, preset)
-                self.status_logger.info(f"FIO gestartet ({preset}) auf {dev['device']} ({target})")
+                self.status_logger.info(f"INFO: FIO gestartet ({preset}) auf {dev['device']} ({target})")
+                result = fio_runner.run_preset_with_result(target, preset)
+                self._apply_device_updates(
+                    dev,
+                    {
+                        "fio_bw": round(result.get("bw_mb_s"), 2) if result.get("bw_mb_s") is not None else None,
+                        "fio_iops": round(result.get("iops"), 2) if result.get("iops") is not None else None,
+                        "fio_lat": round(result.get("lat_ms"), 3) if result.get("lat_ms") is not None else None,
+                        "fio_ok": result.get("ok"),
+                    },
+                )
+                self.status_logger.info(
+                    f"INFO: FIO-Ergebnis für {dev['device']} – "
+                    f"{result.get('bw_mb_s', '–')} MB/s, {result.get('iops', '–')} IOPS, "
+                    f"{result.get('lat_ms', '–')} ms, OK={result.get('ok')}"
+                )
+            self._populate_table()
         except RuntimeError as exc:
             self._handle_runner_error(exc)
 
@@ -593,7 +686,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, title, pretty)
 
     def launch_cert_gui(self):
-        os.system(f"python3 certificates/export_certificates_gui.py &")
+        os.system("python3 certificates/export_certificates_gui.py &")
 
     def open_log_folder(self):
         folder = self.config.get("log_dir")

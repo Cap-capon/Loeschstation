@@ -96,8 +96,11 @@ def list_physical_drives(controller_id: int) -> List[Dict]:
             or entry.get("Serial Number")
             or ""
         )
-        if not serial and eid is not None and slot is not None:
-            serial = _get_pd_serial(controller_id, eid, slot)
+        model = entry.get("Model", "")
+        if (not serial or not model) and eid is not None and slot is not None:
+            detail = _get_pd_details(controller_id, eid, slot)
+            serial = serial or detail.get("serial", "")
+            model = model or detail.get("model", "")
         drives.append(
             {
                 "controller": controller_id,
@@ -107,7 +110,7 @@ def list_physical_drives(controller_id: int) -> List[Dict]:
                 "size": entry.get("Size", ""),
                 "intf": entry.get("Intf", ""),
                 "med": entry.get("Med", ""),
-                "model": entry.get("Model", ""),
+                "model": model,
                 "serial": serial,
                 "state": entry.get("State", ""),
             }
@@ -179,26 +182,27 @@ def set_all_drives_to_jbod(controller_id: Optional[int] = None) -> None:
             raise
 
 
-def _get_pd_serial(controller_id: int, eid: int, slot: int) -> str:
+def _get_pd_details(controller_id: int, eid: int, slot: int) -> Dict[str, str]:
     try:
         data = _run_storcli_json(
             [f"/c{controller_id}", f"/e{eid}", f"/s{slot}", "show", "all", "J"]
         )
     except Exception:
-        return ""
+        return {"serial": "", "model": ""}
 
     controllers = data.get("Controllers", []) or []
     if not controllers:
-        return ""
+        return {"serial": "", "model": ""}
 
     resp = (controllers[0] or {}).get("Response Data", {}) or {}
     for key, value in resp.items():
         if not isinstance(value, dict):
             continue
         serial = value.get("SN") or value.get("S/N") or value.get("Serial Number")
-        if serial:
-            return str(serial)
-    return ""
+        model = value.get("Model") or value.get("MODEL")
+        if serial or model:
+            return {"serial": str(serial or ""), "model": str(model or "")}
+    return {"serial": "", "model": ""}
 
 
 def _is_jbod_command_invalid(data: Dict) -> bool:

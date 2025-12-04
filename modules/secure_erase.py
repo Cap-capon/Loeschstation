@@ -1,6 +1,6 @@
 import shlex
 import subprocess
-from typing import List, Dict
+from typing import Dict, List
 
 from PySide6.QtWidgets import QMessageBox
 
@@ -38,12 +38,15 @@ class SecureErasePlanner:
         return reply == QMessageBox.Yes
 
 
-def execute_commands(commands: List[List[str]]) -> None:
+def execute_commands(commands: List[List[str]]) -> Dict:
+    """Startet Secure Erase Befehle. Liefert ok=False, wenn ein Aufruf scheitert."""
+
     pw = config_manager.get_sudo_password()
     if not pw:
         raise RuntimeError("sudo-Passwort nicht konfiguriert")
 
     pw_safe = shlex.quote(pw)
+    all_ok = True
     for cmd in commands:
         try:
             joined = " ".join(shlex.quote(part) for part in cmd)
@@ -57,4 +60,6 @@ def execute_commands(commands: List[List[str]]) -> None:
                 ]
             )
         except FileNotFoundError:
-            continue
+            # Terminal nicht verfügbar → als Fehler markieren, aber Schleife fortsetzen
+            all_ok = False
+    return {"ok": all_ok}
