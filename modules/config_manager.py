@@ -60,3 +60,25 @@ def set_sudo_password(pw: str | None) -> None:
     else:
         config["sudo_password"] = pw
     save_config(config)
+
+
+def _expand_and_ensure(path: str, default: str) -> str:
+    """Expandiert Benutzerpfade und legt das Zielverzeichnis an."""
+
+    resolved = os.path.expanduser(path or default)
+    os.makedirs(resolved, exist_ok=True)
+    return resolved
+
+
+def get_log_dir(config: Dict[str, Any] | None = None) -> str:
+    """Gibt das konfigurierte Log-Verzeichnis zurück und legt es bei Bedarf an."""
+
+    cfg = config or load_config()
+    return _expand_and_ensure(cfg.get("log_dir"), DEFAULT_CONFIG["log_dir"])
+
+
+def get_cert_dir(config: Dict[str, Any] | None = None) -> str:
+    """Gibt das Zertifikats-Verzeichnis zurück und legt es bei Bedarf an."""
+
+    cfg = config or load_config()
+    return _expand_and_ensure(cfg.get("cert_dir"), DEFAULT_CONFIG["cert_dir"])

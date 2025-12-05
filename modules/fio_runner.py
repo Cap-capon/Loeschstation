@@ -1,14 +1,13 @@
 import json
-import shlex
-import subprocess
-from typing import Dict, List
-
-import json
+import logging
 import shlex
 import subprocess
 from typing import Dict, List
 
 from modules import config_manager
+
+
+logger = logging.getLogger("loeschstation")
 
 
 PRESETS = {
@@ -84,9 +83,23 @@ def run_preset_with_result(device: str, preset: str) -> Dict:
     )
 
     stdout = proc.stdout or ""
+    stderr = proc.stderr or ""
     result = _parse_fio_output(stdout)
     result["ok"] = is_fio_result_ok(result, proc.returncode)
     result["command"] = " ".join(cmd)
+    if proc.returncode != 0 or not result.get("ok"):
+        error_hint = stderr.strip() or stdout.strip() or "Unbekannter Fehler"
+        logger.error(
+            "FIO fehlgeschlagen (rc=%s): %s | stdout=%s",
+            proc.returncode,
+            error_hint,
+            stdout.strip(),
+        )
+        result["error"] = error_hint
+    if stdout.strip():
+        result["raw_stdout"] = stdout.strip()
+    if stderr.strip():
+        result["raw_stderr"] = stderr.strip()
     return result
 
 
@@ -118,6 +131,7 @@ def _parse_fio_output(stdout: str) -> Dict:
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError:
+        logger.error("FIO-Output ist kein gültiges JSON: %s", stdout)
         return metrics
 
     jobs = data.get("jobs", []) or []

@@ -2,23 +2,28 @@ import csv
 import json
 import os
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 from modules import config_manager
 
-cfg = config_manager.load_config()
-log_dir = cfg.get("log_dir", config_manager.DEFAULT_CONFIG["log_dir"])
-cert_dir = cfg.get("cert_dir", os.path.join(log_dir, "certificates"))
-LOG_FILE = os.path.join(log_dir, "wipe_log.csv")
-SNAPSHOT_FILE = os.path.join(log_dir, "devices_snapshot.json")
+def _paths() -> Tuple[str, str, str, str]:
+    """Liefert (log_dir, cert_dir, log_file, snapshot_file)."""
+
+    cfg = config_manager.load_config()
+    log_dir = config_manager.get_log_dir(cfg)
+    cert_dir = config_manager.get_cert_dir(cfg)
+    log_file = os.path.join(log_dir, "wipe_log.csv")
+    snapshot_file = os.path.join(log_dir, "devices_snapshot.json")
+    return log_dir, cert_dir, log_file, snapshot_file
 
 
 # --- Hilfsfunktionen -----------------------------------------------------
 
 def ensure_dirs():
+    log_dir, cert_dir, _, _ = _paths()
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(cert_dir, exist_ok=True)
 
@@ -82,11 +87,12 @@ def _wrap_text(c: canvas.Canvas, text: str, x: int, y: int, width: int, line_hei
 
 def read_log_entries() -> List[Dict]:
     ensure_dirs()
-    if not os.path.exists(LOG_FILE):
+    _, _, log_file, _ = _paths()
+    if not os.path.exists(log_file):
         return []
 
     entries: List[Dict] = []
-    with open(LOG_FILE, "r", encoding="utf-8") as f:
+    with open(log_file, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter=";")
         for row in reader:
             entries.append(row)
@@ -95,10 +101,11 @@ def read_log_entries() -> List[Dict]:
 
 def read_snapshot_entries() -> List[Dict]:
     ensure_dirs()
-    if not os.path.exists(SNAPSHOT_FILE):
+    _, _, _, snapshot_file = _paths()
+    if not os.path.exists(snapshot_file):
         return []
     try:
-        with open(SNAPSHOT_FILE, "r", encoding="utf-8") as f:
+        with open(snapshot_file, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
         return []
@@ -132,6 +139,7 @@ def read_snapshot_entries() -> List[Dict]:
 
 def create_pdf(entry: Dict) -> str:
     ensure_dirs()
+    _, cert_dir, _, _ = _paths()
     timestamp = (entry.get("timestamp") or "").replace(":", "-").replace(" ", "_")
     device = entry.get("device_path") or entry.get("bay") or "unbekannt"
     device_safe = device.replace("/", "_")
@@ -177,7 +185,7 @@ def create_pdf(entry: Dict) -> str:
     c.drawString(50, y, "Hinweis:")
     y -= 16
     c.setFont("Helvetica", 10)
-    c.drawString(50, y, "Dieses Zertifikat wurde automatisch von der FLS36 Festplatten-Löschstation generiert.")
+    c.drawString(50, y, "Dieses Zertifikat wurde automatisch vom FLS36 Tool Kit generiert.")
     y -= 14
     c.drawString(50, y, "Die Verantwortung für Auswahl und Durchführung der Löschmethode liegt beim Bediener.")
 

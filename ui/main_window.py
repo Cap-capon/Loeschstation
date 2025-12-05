@@ -1,11 +1,12 @@
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime
 from typing import List, Dict
 
-from PySide6.QtCore import Qt, QByteArray
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt, QByteArray, QEvent, QTimer
+from PySide6.QtGui import QIcon, QTransform
 from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QFrame,
     QScrollArea,
+    QToolButton,
 )
 
 from modules import (
@@ -48,7 +50,7 @@ from ui.settings_window import SettingsWindow
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Festplatten-Löschstation 2025")
+        self.setWindowTitle("FLS36 Tool Kit")
         self.resize(1300, 800)
         self.setWindowIcon(self._load_icon(icons.ICON_NWIPE))
 
@@ -56,6 +58,7 @@ class MainWindow(QMainWindow):
         self.debug_logger = setup_debug_logger(self.config)
         self.expert_mode = ExpertMode(self.config, self._on_expert_change)
         self.secure_planner = secure_erase.SecureErasePlanner(False)
+        self._settings_icon_pixmap = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -122,15 +125,14 @@ class MainWindow(QMainWindow):
         self.btn_open_logs.clicked.connect(self.open_log_folder)
         btn_row.addWidget(self.btn_open_logs)
 
-        self.btn_settings = QPushButton()
+        self.btn_settings = QToolButton()
         self.btn_settings.setIcon(self._load_icon(icons.ICON_SETTINGS))
         self.btn_settings.setToolTip("Einstellungen")
-        self.btn_settings.setFlat(True)
-        self.btn_settings.setStyleSheet(
-            "QPushButton { padding: 6px; }"
-            "QPushButton:hover { background-color: #e8e8e8; border-radius: 4px; }"
-        )
+        self.btn_settings.setAutoRaise(True)
+        self.btn_settings.setIconSize(self.btn_settings.iconSize())
         self.btn_settings.clicked.connect(self.open_settings)
+        self.btn_settings.installEventFilter(self)
+        self._settings_icon_pixmap = self.btn_settings.icon().pixmap(32, 32)
         btn_row.addWidget(self.btn_settings)
 
         btn_row.addStretch()
@@ -211,6 +213,30 @@ class MainWindow(QMainWindow):
 
         return QIcon.fromTheme("drive-harddisk")
 
+    def eventFilter(self, obj, event):
+        if obj is self.btn_settings:
+            if event.type() == QEvent.Enter:
+                self._animate_settings_icon()
+            elif event.type() == QEvent.Leave:
+                self._reset_settings_icon()
+        return super().eventFilter(obj, event)
+
+    def _animate_settings_icon(self):
+        """Leichte Rotation beim Hover für das Zahnrad-Icon."""
+
+        if self._settings_icon_pixmap is None:
+            return
+        rotated = self._settings_icon_pixmap.transformed(
+            QTransform().rotate(18), Qt.SmoothTransformation
+        )
+        self.btn_settings.setIcon(QIcon(rotated))
+        QTimer.singleShot(180, self._reset_settings_icon)
+
+    def _reset_settings_icon(self):
+        if self._settings_icon_pixmap is None:
+            return
+        self.btn_settings.setIcon(QIcon(self._settings_icon_pixmap))
+
     def _create_tile_button(self, text: str, func, icon_path: str | None = None) -> QPushButton:
         btn = QPushButton(text)
         btn.setMinimumHeight(60)
@@ -242,8 +268,8 @@ class MainWindow(QMainWindow):
         ]:
             label = QLabel(f"{title}: –")
             label.setStyleSheet(
-                "padding: 8px 12px; border: 1px solid #d0d0d0;"
-                "border-radius: 4px; background-color: #f7f7f7;"
+                "padding: 8px 12px; border: 1px solid #c7ccd3;"
+                "border-radius: 4px; background-color: #e8ecf1;"
                 "font-weight: 600;"
             )
             self.summary_labels[key] = label
@@ -346,8 +372,7 @@ class MainWindow(QMainWindow):
     def _export_device_snapshot(self) -> None:
         """Exportiert die aktuellen Gerätedaten für Zertifikate/Prüfungen."""
 
-        log_dir = self.config.get("log_dir") or os.path.expanduser("~/loeschstation_logs")
-        os.makedirs(log_dir, exist_ok=True)
+        log_dir = config_manager.get_log_dir(self.config)
         snapshot_path = os.path.join(log_dir, "devices_snapshot.json")
         payload = {"exported_at": datetime.now().isoformat(), "devices": self.devices}
         try:
@@ -663,6 +688,14 @@ class MainWindow(QMainWindow):
                 target = dev.get("target") or dev["device"]
                 self.status_logger.info(f"INFO: FIO gestartet ({preset}) auf {dev['device']} ({target})")
                 result = fio_runner.run_preset_with_result(target, preset)
+                if not result.get("ok"):
+                    error_hint = result.get("error") or "FIO konnte keine Kennzahlen liefern."
+                    self.debug_logger.error(
+                        "FIO-Fehler für %s: %s", dev.get("device"), error_hint
+                    )
+                    raise RuntimeError(
+                        f"FIO konnte nicht abgeschlossen werden – Details im Debug-Log. Fehler: {error_hint}"
+                    )
                 self._apply_device_updates(
                     dev,
                     {
@@ -896,13 +929,21 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, title, pretty)
 
     def launch_cert_gui(self):
-        script = os.path.expanduser("~/script/Löschstation/certificates/export_certificates_gui.py")
-        subprocess.Popen(["python3", script])
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        script = os.path.join(base_dir, "certificates", "export_certificates_gui.py")
+        if not os.path.exists(script):
+            QMessageBox.warning(self, "Zertifikat GUI", f"Script nicht gefunden:\n{script}")
+            return
+        try:
+            subprocess.Popen([sys.executable, script])
+        except Exception as exc:  # pragma: no cover - defensive
+            QMessageBox.warning(
+                self, "Zertifikat GUI", f"Script konnte nicht gestartet werden:\n{exc}"
+            )
 
     def open_log_folder(self):
-        folder = self.config.get("log_dir")
+        folder = config_manager.get_log_dir(self.config)
         if folder:
-            os.makedirs(folder, exist_ok=True)
             os.system(f"xdg-open '{folder}' &")
 
     def _persist_ui_state(self) -> None:

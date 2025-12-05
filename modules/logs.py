@@ -41,9 +41,7 @@ def setup_debug_logger(config: dict) -> logging.Logger:
 
 
 def _wipe_log_path() -> str:
-    config = config_manager.load_config()
-    log_dir = config.get("log_dir", config_manager.DEFAULT_CONFIG["log_dir"])
-    os.makedirs(log_dir, exist_ok=True)
+    log_dir = config_manager.get_log_dir()
     return os.path.join(log_dir, "wipe_log.csv")
 
 
