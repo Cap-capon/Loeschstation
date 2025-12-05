@@ -23,6 +23,7 @@ ICON_SECURE_ERASE = "edit-delete"
 ICON_BLANCCO_OS = ICON_BLANCCO
 ICON_CERT_GUI = "text-x-generic"
 ICON_LOG_FOLDER = "folder"
+ICON_SETTINGS = "preferences-system"
 
 # Default-Icon für unbekannte Tools
 ICON_DEFAULT = "drive-harddisk"

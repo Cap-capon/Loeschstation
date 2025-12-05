@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QInputDialog,
     QMessageBox,
+    QFrame,
+    QScrollArea,
 )
 
 from modules import (
@@ -69,16 +71,18 @@ class MainWindow(QMainWindow):
         status_row.addStretch()
         main_layout.addLayout(status_row)
 
-        self.main_splitter = QSplitter()
-        self.main_splitter.setOrientation(Qt.Horizontal)
+        self.main_splitter = QSplitter(Qt.Vertical)
         main_layout.addWidget(self.main_splitter, 1)
 
-        # Left side
-        left = QWidget()
-        left_layout = QVBoxLayout()
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(8)
-        left.setLayout(left_layout)
+        # Oberer Bereich: Summary-Leiste + Gerätetabelle
+        top_container = QWidget()
+        top_layout = QVBoxLayout()
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(8)
+        top_container.setLayout(top_layout)
+
+        self.summary_bar = self._build_summary_bar()
+        top_layout.addWidget(self.summary_bar)
 
         self.device_table = QTableWidget()
         self.device_table.setColumnCount(14)
@@ -94,9 +98,9 @@ class MainWindow(QMainWindow):
             "FIO Latenz(ms)",
             "FIO OK",
             "Erase Methode",
-            "Erase OK",
-            "Timestamp",
             "Löschstandard",
+            "Timestamp",
+            "Erase OK",
         ])
         self.device_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.device_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -118,7 +122,14 @@ class MainWindow(QMainWindow):
         self.btn_open_logs.clicked.connect(self.open_log_folder)
         btn_row.addWidget(self.btn_open_logs)
 
-        self.btn_settings = QPushButton("Einstellungen")
+        self.btn_settings = QPushButton()
+        self.btn_settings.setIcon(self._load_icon(icons.ICON_SETTINGS))
+        self.btn_settings.setToolTip("Einstellungen")
+        self.btn_settings.setFlat(True)
+        self.btn_settings.setStyleSheet(
+            "QPushButton { padding: 6px; }"
+            "QPushButton:hover { background-color: #e8e8e8; border-radius: 4px; }"
+        )
         self.btn_settings.clicked.connect(self.open_settings)
         btn_row.addWidget(self.btn_settings)
 
@@ -129,32 +140,32 @@ class MainWindow(QMainWindow):
         self.btn_cert_gui.clicked.connect(self.launch_cert_gui)
         btn_row.addWidget(self.btn_cert_gui)
 
-        table_container = QWidget()
-        table_layout = QVBoxLayout()
-        table_layout.setContentsMargins(0, 0, 0, 0)
-        table_layout.addWidget(self.device_table)
-        table_layout.addLayout(btn_row)
-        table_container.setLayout(table_layout)
+        top_layout.addWidget(self.device_table)
+        self.main_splitter.addWidget(top_container)
+
+        # Unterer Bereich: Log links, Tiles rechts
+        self.bottom_splitter = QSplitter(Qt.Horizontal)
+        self.bottom_splitter.setChildrenCollapsible(False)
+
+        left_panel = QWidget()
+        left_layout = QVBoxLayout()
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
+        left_panel.setLayout(left_layout)
+
+        left_layout.addLayout(btn_row)
 
         self.status_log = QTextEdit()
         self.status_log.setReadOnly(True)
+        left_layout.addWidget(self.status_log)
 
-        self.left_splitter = QSplitter(Qt.Vertical)
-        self.left_splitter.addWidget(table_container)
-        self.left_splitter.addWidget(self.status_log)
-        # Mehr Platz für die (breitere) Gerätetabelle
-        self.left_splitter.setSizes([700, 200])
+        self.bottom_splitter.addWidget(left_panel)
 
-        left_layout.addWidget(self.left_splitter)
-
-        self.main_splitter.addWidget(left)
-
-        # Right side dashboard
-        right = QWidget()
+        right_panel = QWidget()
         right_layout = QVBoxLayout()
         right_layout.setSpacing(12)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right.setLayout(right_layout)
+        right_panel.setLayout(right_layout)
 
         right_layout.addWidget(self._build_diagnostics_group())
         right_layout.addWidget(self._build_wipe_group())
@@ -163,8 +174,14 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.raid_group)
         right_layout.addStretch()
 
-        self.main_splitter.addWidget(right)
-        self.main_splitter.setSizes([1050, 400])
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(right_panel)
+        self.bottom_splitter.addWidget(scroll)
+        self.bottom_splitter.setSizes([900, 400])
+
+        self.main_splitter.addWidget(self.bottom_splitter)
+        self.main_splitter.setSizes([600, 300])
 
         self._restore_window_state()
         self._update_expert_visibility()
@@ -204,6 +221,36 @@ class MainWindow(QMainWindow):
         )
         btn.clicked.connect(func)
         return btn
+
+    def _build_summary_bar(self) -> QFrame:
+        """Erzeugt die kompakte Übersicht über den Gerätestatus."""
+
+        frame = QFrame()
+        frame.setFrameShape(QFrame.StyledPanel)
+        layout = QHBoxLayout()
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(12)
+        frame.setLayout(layout)
+
+        self.summary_labels: Dict[str, QLabel] = {}
+        for key, title in [
+            ("total", "Gesamt"),
+            ("tested_ok", "Getestet OK"),
+            ("tested_only", "Nur getestet"),
+            ("errors", "Fehler"),
+            ("not_tested", "Ohne Test"),
+        ]:
+            label = QLabel(f"{title}: –")
+            label.setStyleSheet(
+                "padding: 8px 12px; border: 1px solid #d0d0d0;"
+                "border-radius: 4px; background-color: #f7f7f7;"
+                "font-weight: 600;"
+            )
+            self.summary_labels[key] = label
+            layout.addWidget(label)
+
+        layout.addStretch()
+        return frame
 
     def _build_grid_box(self, title: str, buttons: List[QPushButton], columns: int = 3) -> QGroupBox:
         box = QGroupBox(title)
@@ -264,6 +311,34 @@ class MainWindow(QMainWindow):
     def _append_status(self, text: str) -> None:
         self.status_log.append(text)
         self.debug_logger.info(text)
+
+    def _update_summary(self) -> None:
+        """Aktualisiert die Kennzahlen über der Gerätetabelle."""
+
+        labels = getattr(self, "summary_labels", {})
+        devices = getattr(self, "devices", []) or []
+        totals = {
+            "total": len(devices),
+            "tested_ok": sum(
+                1 for d in devices if d.get("fio_ok") is True and d.get("erase_ok") is True
+            ),
+            "tested_only": sum(
+                1 for d in devices if d.get("fio_ok") is not None and d.get("erase_ok") is None
+            ),
+            "errors": sum(1 for d in devices if d.get("fio_ok") is False or d.get("erase_ok") is False),
+            "not_tested": sum(
+                1 for d in devices if d.get("fio_ok") is None and d.get("erase_ok") is None
+            ),
+        }
+        titles = {
+            "total": "Gesamt",
+            "tested_ok": "Getestet OK",
+            "tested_only": "Nur getestet",
+            "errors": "Fehler",
+            "not_tested": "Ohne Test",
+        }
+        for key, label in labels.items():
+            label.setText(f"{titles.get(key, key)}: {totals.get(key, 0)}")
 
     def append_status(self, text: str) -> None:
         self._append_status(text)
@@ -376,9 +451,9 @@ class MainWindow(QMainWindow):
                     "fio_lat",
                     "fio_ok",
                     "erase_method",
-                    "erase_ok",
-                    "erase_timestamp",
                     "erase_standard",
+                    "erase_timestamp",
+                    "erase_ok",
                 ]
             ):
                 value = dev.get(key, "")
@@ -395,6 +470,7 @@ class MainWindow(QMainWindow):
                     item.setData(Qt.UserRole, dev)
                 self.device_table.setItem(row, col, item)
         self._export_device_snapshot()
+        self._update_summary()
 
     def _apply_device_updates(self, device: Dict, updates: Dict) -> None:
         """Schreibt Testergebnisse in self.devices anhand der device_id."""
@@ -513,14 +589,17 @@ class MainWindow(QMainWindow):
             main_state = splitter_state.get("main")
             if main_state:
                 self.main_splitter.restoreState(QByteArray.fromHex(str(main_state).encode()))
-            left_state = splitter_state.get("left")
-            if left_state:
-                self.left_splitter.restoreState(QByteArray.fromHex(str(left_state).encode()))
+            bottom_state = splitter_state.get("bottom") or splitter_state.get("left")
+            if bottom_state:
+                self.bottom_splitter.restoreState(QByteArray.fromHex(str(bottom_state).encode()))
 
         header_state = self.config.get("table_header_state")
         if header_state:
-            ba = QByteArray.fromHex(str(header_state).encode("ascii"))
-            self.device_table.horizontalHeader().restoreState(ba)
+            try:
+                ba = QByteArray.fromHex(str(header_state).encode("ascii"))
+                self.device_table.horizontalHeader().restoreState(ba)
+            except Exception:  # pragma: no cover - defensive
+                pass
 
         widths = self.config.get("table_column_widths") or []
         for idx, width in enumerate(widths):
@@ -745,6 +824,7 @@ class MainWindow(QMainWindow):
                         "timestamp": timestamp,
                     },
                 )
+            self._update_summary()
         except RuntimeError as exc:
             self._handle_runner_error(exc)
 
@@ -829,8 +909,10 @@ class MainWindow(QMainWindow):
         self.config["window_geometry"] = bytes(self.saveGeometry().toHex()).decode("ascii")
         self.config["splitter_state"] = {
             "main": bytes(self.main_splitter.saveState().toHex()).decode("ascii"),
-            "left": bytes(self.left_splitter.saveState().toHex()).decode("ascii"),
+            "bottom": bytes(self.bottom_splitter.saveState().toHex()).decode("ascii"),
         }
+        # Legacy Key für ältere Konfigurationsdateien beibehalten
+        self.config["splitter_state"]["left"] = self.config["splitter_state"]["bottom"]
         self.config["table_column_widths"] = [
             self.device_table.columnWidth(i) for i in range(self.device_table.columnCount())
         ]
