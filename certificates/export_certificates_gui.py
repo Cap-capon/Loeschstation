@@ -17,6 +17,11 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
 )
 
+base_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.dirname(base_dir)
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
 import export_certificates as cert_core
 
 
@@ -24,10 +29,8 @@ class CertificateGUI(QWidget):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Lösch-Zertifikate – FLS36")
+        self.setWindowTitle("Lösch-Zertifikate – FLS36 Tool Kit")
         self.resize(1100, 650)
-
-        self.config = cert_core.cfg
 
         self.entries: List[Dict] = []
 
@@ -35,7 +38,7 @@ class CertificateGUI(QWidget):
         self.setLayout(main_layout)
 
         info_label = QLabel(
-            "<b>Hinweis:</b> Dieses Tool liest die Log-Datei der Festplatten-Löschstation "
+            "<b>Hinweis:</b> Dieses Tool liest die Log-Datei des FLS36 Tool Kit "
             "und erzeugt daraus PDF-Zertifikate."
         )
         info_label.setWordWrap(True)
@@ -182,13 +185,13 @@ class CertificateGUI(QWidget):
 
     def open_folder(self):
         cert_core.ensure_dirs()
-        folder = self.config.get("log_dir", cert_core.log_dir)
+        folder, _, _, _ = cert_core._paths()
         self.log_text.append(f"Öffne Ordner: {folder}\n")
         self._open_path(folder)
 
     def open_cert_folder(self):
         cert_core.ensure_dirs()
-        folder = self.config.get("cert_dir", cert_core.cert_dir)
+        _, folder, _, _ = cert_core._paths()
         self.log_text.append(f"Öffne Zertifikats-Ordner: {folder}\n")
         self._open_path(folder)
 
@@ -200,10 +203,14 @@ class CertificateGUI(QWidget):
 
 
 def main():
-    app = QApplication(sys.argv)
-    gui = CertificateGUI()
-    gui.show()
-    sys.exit(app.exec())
+    try:
+        app = QApplication(sys.argv)
+        gui = CertificateGUI()
+        gui.show()
+        sys.exit(app.exec())
+    except Exception as exc:  # pragma: no cover - defensive UI bootstrap
+        print(f"Zertifikat-GUI konnte nicht gestartet werden: {exc}", file=sys.stderr)
+        raise
 
 
 if __name__ == "__main__":
