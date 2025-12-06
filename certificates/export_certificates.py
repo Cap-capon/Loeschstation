@@ -9,6 +9,39 @@ from reportlab.pdfgen import canvas
 
 from modules import config_manager
 
+
+def _normalized_entry(entry: Dict) -> Dict:
+    normalized = entry.copy()
+    missing_fields = []
+
+    def _require(key: str, default_value):
+        value = normalized.get(key)
+        if value in (None, "") or (key == "serial" and str(value).upper() == "UNKNOWN"):
+            missing_fields.append(key)
+            normalized[key] = default_value
+
+    _require("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    _require("bay", normalized.get("device_path") or "unbekannt")
+    _require("device_path", normalized.get("bay") or "unbekannt")
+    _require("size", "UNKNOWN")
+    _require("model", "UNKNOWN")
+    _require("serial", "NICHT ERMITTELBAR")
+    _require("transport", "UNKNOWN")
+    for key in ("fio_mb", "fio_iops", "fio_lat"):
+        if normalized.get(key) in (None, ""):
+            missing_fields.append(key)
+            normalized[key] = "–"
+    _require("erase_standard", "UNKNOWN")
+    _require("erase_method", "UNKNOWN")
+    if normalized.get("erase_ok") is None:
+        missing_fields.append("erase_ok")
+        normalized["erase_ok"] = None
+
+    if missing_fields:
+        normalized["warnings"] = missing_fields
+        entry["warnings"] = missing_fields
+    return normalized
+
 def _paths() -> Tuple[str, str, str, str]:
     """Liefert (log_dir, cert_dir, log_file, snapshot_file)."""
 
@@ -140,8 +173,9 @@ def read_snapshot_entries() -> List[Dict]:
 def create_pdf(entry: Dict) -> str:
     ensure_dirs()
     _, cert_dir, _, _ = _paths()
-    timestamp = (entry.get("timestamp") or "").replace(":", "-").replace(" ", "_")
-    device = entry.get("device_path") or entry.get("bay") or "unbekannt"
+    normalized = _normalized_entry(entry)
+    timestamp = (normalized.get("timestamp") or "").replace(":", "-").replace(" ", "_")
+    device = normalized.get("device_path") or normalized.get("bay") or "unbekannt"
     device_safe = device.replace("/", "_")
     pdf_name = f"certificate_{device_safe}_{timestamp}.pdf"
     pdf_path = os.path.join(cert_dir, pdf_name)
@@ -154,28 +188,28 @@ def create_pdf(entry: Dict) -> str:
 
     c.setFont("Helvetica", 12)
     y = height - 100
-    c.drawString(50, y, f"Löschdatum:        {entry.get('timestamp', '')}")
+    c.drawString(50, y, f"Löschdatum:        {normalized.get('timestamp', '')}")
     y -= 20
-    c.drawString(50, y, f"Bay / Pfad:        {entry.get('bay', '')} / {entry.get('device_path', '')}")
+    c.drawString(50, y, f"Bay / Pfad:        {normalized.get('bay', '')} / {normalized.get('device_path', '')}")
     y -= 20
-    c.drawString(50, y, f"Modell:            {entry.get('model', '')}")
+    c.drawString(50, y, f"Modell:            {normalized.get('model', '')}")
     y -= 20
-    c.drawString(50, y, f"Seriennummer:      {entry.get('serial', '')}")
+    c.drawString(50, y, f"Seriennummer:      {normalized.get('serial', '')}")
     y -= 20
-    c.drawString(50, y, f"Größe / Transport: {entry.get('size', '')} / {entry.get('transport', '')}")
+    c.drawString(50, y, f"Größe / Transport: {normalized.get('size', '')} / {normalized.get('transport', '')}")
     y -= 20
-    c.drawString(50, y, f"FIO Ergebnisse:    {_format_fio_text(entry)}")
+    c.drawString(50, y, f"FIO Ergebnisse:    {_format_fio_text(normalized)}")
     y -= 20
-    c.drawString(50, y, f"Erase Methode:     {_format_erase_text(entry)}")
+    c.drawString(50, y, f"Erase Methode:     {_format_erase_text(normalized)}")
     y -= 20
-    c.drawString(50, y, f"Löschstandard:     {entry.get('erase_standard','–')}")
+    c.drawString(50, y, f"Löschstandard:     {normalized.get('erase_standard','–')}")
     y -= 40
 
     c.setFont("Helvetica-Bold", 14)
     c.drawString(50, y, "Befehl(e):")
     y -= 20
     c.setFont("Helvetica", 10)
-    command = entry.get("command", "")
+    command = normalized.get("command", "")
     y = _wrap_text(c, command, 50, y, int(width - 80), 14)
 
     c.line(50, y - 10, width - 50, y - 10)
@@ -210,6 +244,7 @@ def main():
     for entry in entries:
         pdf_path = create_pdf(entry)
         print(f"PDF erstellt: {pdf_path}")
+    _, cert_dir, _, _ = _paths()
     print(f"Zertifikate gespeichert in: {cert_dir}")
 
 

@@ -11,32 +11,14 @@ MODES = {
 }
 
 
-def _resolve_megaraid_path(dev: Dict) -> str:
-    """
-    Mappt MegaRAID-Pfade auf Linux-Devices, damit badblocks (wie bei Nwipe)
-    direkt auf /dev/sdX arbeiten kann.
-    """
-
-    linux_devices = device_scan.scan_linux_disks()
-    target_size = dev.get("size", "")
-    target_model = dev.get("model", "")
-    target_serial = dev.get("serial", "")
-    for candidate in linux_devices:
-        if candidate.get("size", "") != target_size:
-            continue
-        if target_model and candidate.get("model", "") != target_model:
-            continue
-        if target_serial and candidate.get("serial", "") != target_serial:
-            continue
-        return candidate.get("path") or candidate.get("device", "")
-    raise RuntimeError("Badblocks: MegaRAID-Device konnte nicht aufgelöst werden")
-
-
 def resolve_target(dev: Dict) -> str:
     path = dev.get("path") or dev.get("device") or ""
     if path.startswith("/dev/megaraid/"):
-        return _resolve_megaraid_path(dev)
-    if path:
+        resolved = device_scan.resolve_megaraid_target(dev)
+        if resolved and resolved.startswith(("/dev/sd", "/dev/nvme")):
+            return resolved
+        raise RuntimeError("Dieses Werkzeug kann auf MegaRAID-Drives nicht direkt ausgeführt werden.")
+    if path and path.startswith(("/dev/sd", "/dev/nvme")):
         return path
     raise RuntimeError("Badblocks: Kein gültiger Gerätepfad gefunden")
 

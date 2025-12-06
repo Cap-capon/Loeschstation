@@ -17,10 +17,10 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
 )
 
-base_dir = os.path.dirname(os.path.abspath(__file__))
-root_dir = os.path.dirname(base_dir)
-if root_dir not in sys.path:
-    sys.path.insert(0, root_dir)
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+script = os.path.join(base_dir, "certificates", "export_certificates_gui.py")
+if base_dir not in sys.path:
+    sys.path.insert(0, base_dir)
 
 import export_certificates as cert_core
 
@@ -122,29 +122,43 @@ class CertificateGUI(QWidget):
         return rows
 
     def load_entries(self):
-        self.entries = cert_core.read_log_entries()
-        if not self.entries:
-            self.entries = cert_core.read_snapshot_entries()
         self.table.setRowCount(0)
+        try:
+            self.entries = cert_core.read_log_entries()
+            if not self.entries:
+                self.entries = cert_core.read_snapshot_entries()
+                log_dir, _, log_file, _ = cert_core._paths()
+                if os.path.exists(log_file):
+                    self.log_text.append(
+                        "Log-Datei gefunden, aber ohne verwertbare Einträge – Snapshot wird genutzt."
+                    )
+        except Exception as exc:  # pragma: no cover - defensive UI load
+            self.entries = []
+            self.log_text.append(f"Fehler beim Laden der Einträge: {exc}\n")
+            return
 
         if not self.entries:
             self.log_text.append("Keine Einträge in der Log-Datei gefunden.\n")
             return
 
-        rows = self._rows_from_entries()
-        for row_idx, row in enumerate(rows):
-            self.table.insertRow(row_idx)
-            self.table.setItem(row_idx, 0, QTableWidgetItem(row["timestamp"]))
-            self.table.setItem(row_idx, 1, QTableWidgetItem(row["bay"]))
-            self.table.setItem(row_idx, 2, QTableWidgetItem(row["path"]))
-            self.table.setItem(row_idx, 3, QTableWidgetItem(row["size"]))
-            self.table.setItem(row_idx, 4, QTableWidgetItem(row["model"]))
-            self.table.setItem(row_idx, 5, QTableWidgetItem(row["serial"]))
-            self.table.setItem(row_idx, 6, QTableWidgetItem(row["transport"]))
-            self.table.setItem(row_idx, 7, QTableWidgetItem(row["fio"]))
-            self.table.setItem(row_idx, 8, QTableWidgetItem(row["erase"]))
-            self.table.setItem(row_idx, 9, QTableWidgetItem(row.get("standard", "")))
-            self.table.setItem(row_idx, 10, QTableWidgetItem(row["command"]))
+        try:
+            rows = self._rows_from_entries()
+            for row_idx, row in enumerate(rows):
+                self.table.insertRow(row_idx)
+                self.table.setItem(row_idx, 0, QTableWidgetItem(row["timestamp"]))
+                self.table.setItem(row_idx, 1, QTableWidgetItem(row["bay"]))
+                self.table.setItem(row_idx, 2, QTableWidgetItem(row["path"]))
+                self.table.setItem(row_idx, 3, QTableWidgetItem(row["size"]))
+                self.table.setItem(row_idx, 4, QTableWidgetItem(row["model"]))
+                self.table.setItem(row_idx, 5, QTableWidgetItem(row["serial"]))
+                self.table.setItem(row_idx, 6, QTableWidgetItem(row["transport"]))
+                self.table.setItem(row_idx, 7, QTableWidgetItem(row["fio"]))
+                self.table.setItem(row_idx, 8, QTableWidgetItem(row["erase"]))
+                self.table.setItem(row_idx, 9, QTableWidgetItem(row.get("standard", "")))
+                self.table.setItem(row_idx, 10, QTableWidgetItem(row["command"]))
+        except Exception as exc:  # pragma: no cover - defensive UI load
+            self.log_text.append(f"Fehler beim Befüllen der Tabelle: {exc}\n")
+            return
 
         self.log_text.append(f"{len(self.entries)} Einträge aus der Log-Datei geladen.\n")
 
@@ -163,9 +177,16 @@ class CertificateGUI(QWidget):
 
         count = 0
         for e in self.entries:
-            path = cert_core.create_pdf(e)
-            self.log_text.append(f"PDF erstellt: {path}")
-            count += 1
+            try:
+                path = cert_core.create_pdf(e)
+                self.log_text.append(f"PDF erstellt: {path}")
+                if e.get("warnings"):
+                    self.log_text.append(
+                        f"Hinweis für {path}: fehlende Felder -> {', '.join(e.get('warnings'))}"
+                    )
+                count += 1
+            except Exception as exc:  # pragma: no cover - defensive UI action
+                self.log_text.append(f"Fehler bei PDF-Erstellung: {exc}")
 
         self.log_text.append(f"\nFertig: {count} Zertifikate erstellt.\n")
 
@@ -177,9 +198,16 @@ class CertificateGUI(QWidget):
 
         count = 0
         for e in selected:
-            path = cert_core.create_pdf(e)
-            self.log_text.append(f"PDF erstellt (Auswahl): {path}")
-            count += 1
+            try:
+                path = cert_core.create_pdf(e)
+                self.log_text.append(f"PDF erstellt (Auswahl): {path}")
+                if e.get("warnings"):
+                    self.log_text.append(
+                        f"Hinweis für {path}: fehlende Felder -> {', '.join(e.get('warnings'))}"
+                    )
+                count += 1
+            except Exception as exc:  # pragma: no cover - defensive UI action
+                self.log_text.append(f"Fehler bei PDF-Erstellung: {exc}")
 
         self.log_text.append(f"\nFertig: {count} Zertifikate für Auswahl erstellt.\n")
 

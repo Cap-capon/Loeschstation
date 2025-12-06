@@ -1,12 +1,17 @@
 import datetime
 import datetime
 import shlex
+import datetime
+import shlex
 import subprocess
 from typing import Dict, List
 
 from PySide6.QtWidgets import QMessageBox
 
-from modules import config_manager
+from modules import config_manager, device_scan
+
+
+SUPPORTED_STANDARDS = ["blancco", "dod-3pass", "dod-7pass", "secure-erase", "zero-fill"]
 
 
 class SecureErasePlanner:
@@ -16,6 +21,8 @@ class SecureErasePlanner:
     def build_commands(self, device_info: Dict) -> List[List[str]]:
         transport = (device_info.get("transport") or "").lower()
         device = device_info.get("device")
+        if not device or not device.startswith(("/dev/sd", "/dev/nvme")):
+            raise RuntimeError("Dieses Werkzeug kann auf MegaRAID-Drives nicht direkt ausgeführt werden.")
         commands: List[List[str]] = []
 
         if "nvme" in transport or device.startswith("/dev/nvme"):

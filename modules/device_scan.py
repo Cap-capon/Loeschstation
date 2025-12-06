@@ -1,7 +1,8 @@
 import json
 import logging
+import re
 import subprocess
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 from modules import raid_storcli
 
@@ -64,6 +65,92 @@ def _is_internal_mainboard_disk(dev: Dict, transport: str) -> bool:
         and hotplug is not True
         and not is_usb
     )
+
+
+def _size_to_bytes(size_str: str) -> float:
+    """Konvertiert lsblk-Größen (z.B. "1.8T") in Bytes für Vergleiche."""
+
+    if not size_str:
+        return 0.0
+    match = re.match(r"([0-9]*\.?[0-9]+)\s*([KMGT]?)", str(size_str).strip(), re.IGNORECASE)
+    if not match:
+        return 0.0
+    value = float(match.group(1))
+    unit = match.group(2).upper()
+    multiplier = {
+        "": 1,
+        "K": 1_000,
+        "M": 1_000_000,
+        "G": 1_000_000_000,
+        "T": 1_000_000_000_000,
+    }.get(unit, 1)
+    return value * multiplier
+
+
+def _pick_largest_device(devices: List[Dict]) -> Optional[Dict]:
+    if not devices:
+        return None
+    largest = None
+    largest_size = -1.0
+    for dev in devices:
+        size_bytes = _size_to_bytes(dev.get("size", ""))
+        if size_bytes > largest_size:
+            largest_size = size_bytes
+            largest = dev
+    return largest
+
+
+def _match_linux_device(target_info: Dict, linux_devices: List[Dict]) -> Optional[str]:
+    if not target_info:
+        return None
+
+    target_serial = str(target_info.get("serial") or "").strip()
+    target_model = str(target_info.get("model") or "").strip()
+    target_size = str(target_info.get("size") or "").strip()
+
+    serial_matches = []
+    if target_serial and target_serial.upper() != "UNKNOWN":
+        serial_matches = [
+            dev
+            for dev in linux_devices
+            if str(dev.get("serial") or "").strip() == target_serial
+        ]
+        if serial_matches:
+            chosen = _pick_largest_device(serial_matches)
+            if chosen:
+                return chosen.get("path") or chosen.get("device")
+
+    if (not serial_matches) and target_model and target_size:
+        model_size_matches = [
+            dev
+            for dev in linux_devices
+            if str(dev.get("model") or "").strip() == target_model
+            and str(dev.get("size") or "").strip() == target_size
+        ]
+        chosen = _pick_largest_device(model_size_matches)
+        if chosen:
+            return chosen.get("path") or chosen.get("device")
+
+    os_path = target_info.get("os_path") or ""
+    if os_path and os_path.startswith("/dev/"):
+        return os_path
+    return None
+
+
+def resolve_megaraid_target(dev: Dict) -> Optional[str]:
+    """Löst MegaRAID-Pfade auf ein Linux-Device auf (für FIO/Badblocks/etc.)."""
+
+    path = dev.get("path") or dev.get("device") or ""
+    if not path.startswith("/dev/megaraid/"):
+        return path if path else None
+
+    megaraid_devices = scan_megaraid_devices()
+    target_info = next((d for d in megaraid_devices if d.get("path") == path), None)
+    if target_info is None:
+        target_info = dev
+    linux_devices = scan_linux_disks()
+    resolved = _match_linux_device(target_info, linux_devices)
+    return resolved
 
 
 def scan_linux_disks() -> List[Dict]:
@@ -156,6 +243,7 @@ def scan_megaraid_devices() -> List[Dict]:
                     "model": pd.get("model", ""),
                     "serial": pd.get("serial", ""),
                     "transport": f"storcli:{pd.get('intf', '')}",
+                    "os_path": pd.get("os_path", ""),
                     "is_system": False,
                     "erase_allowed": True,
                     # Testergebnisse folgen später aus dem UI
