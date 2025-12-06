@@ -100,7 +100,7 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self.summary_bar)
 
         self.device_table = QTableWidget()
-        self.device_table.setColumnCount(15)
+        self.device_table.setColumnCount(16)
         self.device_table.setHorizontalHeaderLabels([
             "Bay",
             "Pfad",
@@ -114,6 +114,7 @@ class MainWindow(QMainWindow):
             "FIO Latenz",
             "FIO OK",
             "Erase Methode",
+            "Erase Tool",
             "Löschstandard",
             "Timestamp",
             "Erase OK",
@@ -346,7 +347,6 @@ class MainWindow(QMainWindow):
         self.erase_standard_combo.addItem("DoD 7-Pass", "dod-7pass")
         self.erase_standard_combo.addItem("Secure Erase", "secure-erase")
         self.erase_standard_combo.addItem("Secure Erase Enhanced", "secure-erase-enhanced")
-        self.erase_standard_combo.addItem("Blancco kompatibel", "blancco")
         self.erase_standard_combo.setMinimumHeight(38)
         self.erase_standard_combo.setStyleSheet(
             "QComboBox { padding: 6px 10px; font-weight: 600; }"
@@ -445,9 +445,15 @@ class MainWindow(QMainWindow):
 
     # --- Logging der Testergebnisse / Löschvorgänge -----------------------
     def _log_device_event(self, device: Dict, data: Dict) -> None:
-        timestamp = data.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        start_timestamp = data.get("start_timestamp") or device.get("start_timestamp")
+        end_timestamp = data.get("erase_timestamp") or data.get("timestamp")
+        if not end_timestamp:
+            end_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = end_timestamp
         entry = {
             "timestamp": timestamp,
+            "start_timestamp": start_timestamp or timestamp,
+            "end_timestamp": end_timestamp,
             "bay": device.get("bay") or device.get("device"),
             "device_path": device.get("path") or device.get("device"),
             "size": device.get("size", ""),
@@ -460,6 +466,7 @@ class MainWindow(QMainWindow):
             "fio_ok": data.get("fio_ok", device.get("fio_ok")),
             "erase_method": data.get("erase_method", device.get("erase_method", "")),
             "erase_standard": data.get("erase_standard", device.get("erase_standard", "")),
+            "erase_tool": data.get("erase_tool", device.get("erase_tool", "")),
             "erase_ok": data.get("erase_ok", device.get("erase_ok")),
             "command": data.get("command") or device.get("command") or "",
             "mapping_hint": data.get("mapping_hint") or device.get("mapping_hint") or "",
@@ -568,6 +575,7 @@ class MainWindow(QMainWindow):
                     "fio_lat",
                     "fio_ok",
                     "erase_method",
+                    "erase_tool",
                     "erase_standard",
                     "erase_timestamp",
                     "erase_ok",
@@ -649,6 +657,25 @@ class MainWindow(QMainWindow):
                 str(self.erase_standard_combo.currentText()),
             )
         return "zero-fill", "Zero Fill / 1-Pass"
+
+    def _validate_tool_standard(self, tool: str, standard: str) -> bool:
+        """Validiert, ob die gewählte Kombination unterstützt wird."""
+
+        supported = {
+            "nwipe": {"zero-fill", "dod-3pass", "dod-7pass"},
+            "secure": {"zero-fill", "secure-erase", "secure-erase-enhanced"},
+            "badblocks": {"zero-fill"},
+        }
+        allowed = supported.get(tool, set())
+        if standard in allowed:
+            return True
+
+        QMessageBox.warning(
+            self,
+            "Nicht unterstützt",
+            "Die gewählte Löschmethode wird vom ausgewählten Tool nicht unterstützt.",
+        )
+        return False
 
     def _ensure_devices_selected(self) -> List[Dict] | None:
         devices = self.selected_devices()
@@ -761,12 +788,15 @@ class MainWindow(QMainWindow):
         tool_value, tool_label = self._selected_tool()
         standard_value, standard_label = self._selected_standard()
 
+        if not self._validate_tool_standard(tool_value, standard_value):
+            return
+
         if tool_value == "nwipe":
-            self._run_nwipe_selected(devices, standard_label)
+            self._run_nwipe_selected(devices, standard_value, standard_label)
             return
 
         if tool_value == "badblocks":
-            self._run_badblocks_destructive(devices, standard_label)
+            self._run_badblocks_destructive(devices, standard_value, standard_label)
             return
 
         planner = self.secure_planner
@@ -785,8 +815,10 @@ class MainWindow(QMainWindow):
                     "erase_timestamp": result.get("timestamp"),
                     "erase_method": plan.get("method"),
                     "erase_standard": plan.get("standard", standard_label),
+                    "erase_tool": tool_value,
                     "command": result.get("command"),
                     "timestamp": result.get("timestamp"),
+                    "start_timestamp": result.get("start_timestamp"),
                     "mapping_hint": plan.get("mapping_hint"),
                 }
                 if result.get("error"):
@@ -805,15 +837,26 @@ class MainWindow(QMainWindow):
                     "erase_method": "Secure Erase (ATA/NVMe)",
                     "erase_standard": standard_label,
                     "erase_ok": False,
+                    "erase_tool": tool_value,
                     "command": "",
                     "timestamp": now,
+                    "start_timestamp": now,
                 }
                 self._apply_device_updates(dev, updates)
                 self._log_device_event(dev, updates)
             self._populate_table()
             self._handle_runner_error(exc)
 
-    def _run_badblocks_destructive(self, devices: List[Dict], standard_label: str) -> None:
+    def _run_badblocks_destructive(
+        self, devices: List[Dict], standard_value: str, standard_label: str
+    ) -> None:
+        if standard_value != "zero-fill":
+            QMessageBox.warning(
+                self,
+                "Nicht unterstützt",
+                "Die gewählte Löschmethode wird vom ausgewählten Tool nicht unterstützt.",
+            )
+            return
         try:
             for dev in devices:
                 result = badblocks_runner.run_badblocks(dev, "destructive", erase_standard=standard_label)
@@ -822,8 +865,10 @@ class MainWindow(QMainWindow):
                     "erase_timestamp": result.get("timestamp"),
                     "erase_method": result.get("method"),
                     "erase_standard": standard_label or result.get("method"),
+                    "erase_tool": "badblocks",
                     "command": result.get("command"),
                     "timestamp": result.get("timestamp"),
+                    "start_timestamp": result.get("start_timestamp"),
                 }
                 if not result.get("ok"):
                     self.debug_logger.error(
@@ -845,8 +890,10 @@ class MainWindow(QMainWindow):
                     "erase_timestamp": now,
                     "erase_method": "Badblocks Destructive",
                     "erase_standard": standard_label,
+                    "erase_tool": "badblocks",
                     "command": "",
                     "timestamp": now,
+                    "start_timestamp": now,
                 }
                 self._apply_device_updates(dev, updates)
                 self._log_device_event(dev, updates)
@@ -1008,8 +1055,10 @@ class MainWindow(QMainWindow):
                     "erase_timestamp": result.get("timestamp"),
                     "erase_method": result.get("method"),
                     "erase_standard": result.get("erase_standard", result.get("method")),
+                    "erase_tool": "badblocks",
                     "command": result.get("command"),
                     "timestamp": result.get("timestamp"),
+                    "start_timestamp": result.get("start_timestamp"),
                 }
                 self._apply_device_updates(dev, updates)
                 target = result.get("target") or dev.get("target") or dev.get("device")
@@ -1028,12 +1077,16 @@ class MainWindow(QMainWindow):
         devices = self._filter_erasable(devices)
         if not devices:
             return
-        _, standard_label = self._selected_standard()
-        self._run_nwipe_selected(devices, standard_label)
+        standard_value, standard_label = self._selected_standard()
+        if not self._validate_tool_standard("nwipe", standard_value):
+            return
+        self._run_nwipe_selected(devices, standard_value, standard_label)
 
-    def _run_nwipe_selected(self, devices: List[Dict], standard_label: str) -> None:
+    def _run_nwipe_selected(
+        self, devices: List[Dict], standard_value: str, standard_label: str
+    ) -> None:
         try:
-            result = nwipe_runner.run_nwipe(devices, standard_label)
+            result = nwipe_runner.run_nwipe(devices, standard_value)
             targets = result.get("targets", [])
             erase_result = result.get("erase_result", {})
             self.status_logger.info(f"Nwipe gestartet auf {', '.join(targets)}")
@@ -1043,9 +1096,11 @@ class MainWindow(QMainWindow):
                 updates = {
                     "erase_method": erase_result.get("erase_method", "Nwipe"),
                     "erase_standard": erase_result.get("erase_standard", standard_label),
+                    "erase_tool": "nwipe",
                     "erase_ok": erase_result.get("erase_ok"),
                     "command": command,
                     "timestamp": timestamp,
+                    "start_timestamp": erase_result.get("start_timestamp", timestamp),
                 }
                 self._apply_device_updates(dev, updates)
                 self._log_device_event(dev, updates)

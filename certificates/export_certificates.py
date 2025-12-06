@@ -97,8 +97,12 @@ def _normalized_entry(entry: Dict) -> Dict:
             normalized[key] = default_value
         return normalized[key]
 
-    timestamp = normalized.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    end_timestamp = normalized.get("end_timestamp") or normalized.get("timestamp")
+    start_timestamp = normalized.get("start_timestamp") or end_timestamp
+    timestamp = end_timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     normalized["timestamp"] = timestamp
+    normalized["start_timestamp"] = _safe_text(start_timestamp)
+    normalized["end_timestamp"] = _safe_text(end_timestamp or timestamp)
     normalized["bay"] = _safe_text(normalized.get("bay") or normalized.get("device_path"))
     normalized["device_path"] = _safe_text(normalized.get("device_path") or normalized.get("bay"))
     normalized["size"] = _safe_text(normalized.get("size"))
@@ -107,6 +111,7 @@ def _normalized_entry(entry: Dict) -> Dict:
     normalized["transport"] = _safe_text(normalized.get("transport"))
     normalized["erase_standard"] = _safe_text(normalized.get("erase_standard"))
     normalized["erase_method"] = _safe_text(normalized.get("erase_method"))
+    normalized["erase_tool"] = _safe_text(normalized.get("erase_tool"))
     normalized["command"] = normalized.get("command") or "–"
     normalized["mapping_hint"] = _safe_text(normalized.get("mapping_hint"), "–")
 
@@ -168,8 +173,11 @@ def _format_fio_text(entry: Dict) -> str:
 def _format_erase_text(entry: Dict) -> str:
     ok_text = _bool_to_text(entry.get("erase_ok"))
     method = entry.get("erase_method") or "–"
-    timestamp = entry.get("timestamp") or ""
+    timestamp = entry.get("end_timestamp") or entry.get("timestamp") or ""
+    tool = entry.get("erase_tool") or ""
     parts = [f"Methode: {method}", f"Status: {ok_text}"]
+    if tool:
+        parts.insert(0, f"Tool: {tool}")
     if timestamp:
         parts.append(f"Zeit: {timestamp}")
     return " | ".join(parts)
@@ -227,6 +235,9 @@ def read_snapshot_entries() -> List[Dict]:
                 "erase_method": dev.get("erase_method", ""),
                 "erase_standard": dev.get("erase_standard", ""),
                 "erase_ok": dev.get("erase_ok"),
+                "erase_tool": dev.get("erase_tool", ""),
+                "start_timestamp": dev.get("start_timestamp"),
+                "end_timestamp": dev.get("erase_timestamp"),
                 "command": dev.get("command", ""),
                 "mapping_hint": dev.get("mapping_hint", ""),
             }
@@ -335,10 +346,11 @@ def _build_device_table(entry: Dict, styles) -> Table:
         ["Größe", _safe_text(entry.get("size"))],
         ["Transport", _safe_text(entry.get("transport"))],
         ["Mapping-Hint", _safe_text(entry.get("mapping_hint"))],
+        ["Erase Tool", _safe_text(entry.get("erase_tool"))],
         ["Löschmethode", _safe_text(entry.get("erase_method"))],
         ["Löschstandard", _safe_text(entry.get("erase_standard"))],
         ["Startzeit", _safe_text(entry.get("start_timestamp"))],
-        ["Endzeit", _safe_text(entry.get("timestamp"))],
+        ["Endzeit", _safe_text(entry.get("end_timestamp") or entry.get("timestamp"))],
         ["FIO Benchmark", _format_fio_text(entry)],
     ]
     table = Table(data, colWidths=[50 * mm, 120 * mm])
