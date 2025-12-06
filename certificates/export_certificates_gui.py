@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+from datetime import datetime
 from typing import Dict, List
 
 from PySide6.QtWidgets import (
@@ -133,6 +134,29 @@ class CertificateGUI(QWidget):
         self.table.setRowCount(0)
         try:
             self.entries = cert_core.merge_entries()
+
+            # PATCH-5: prevent GUI crash on missing fields
+            if not isinstance(self.entries, list):
+                self.entries = []
+
+            # ensure dictionary rows
+            cleaned: List[Dict] = []
+            for raw in self.entries:
+                if not isinstance(raw, dict) or not raw:
+                    continue
+                try:
+                    cleaned.append(cert_core._normalized_entry(raw))
+                except Exception:
+                    fallback = raw.copy()
+                    ts = fallback.get("timestamp") or fallback.get("end_timestamp") or fallback.get("erase_timestamp")
+                    if not ts:
+                        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    fallback.setdefault("timestamp", ts)
+                    fallback.setdefault("start_timestamp", fallback.get("start_timestamp") or ts)
+                    fallback.setdefault("end_timestamp", fallback.get("end_timestamp") or fallback.get("erase_timestamp") or ts)
+                    cleaned.append(fallback)
+            self.entries = cleaned
+
             if not self.entries:
                 log_dir, _, log_file, _ = cert_core._paths()
                 snapshot_path = os.path.join(log_dir, "devices_snapshot.json")
