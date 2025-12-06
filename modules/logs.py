@@ -1,6 +1,7 @@
 import csv
 import logging
 import os
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from typing import Callable, Dict
 
@@ -75,6 +76,19 @@ def append_wipe_log(entry: Dict) -> None:
         "mapping_hint",
     ]
 
+    normalized = entry.copy() if isinstance(entry, dict) else {}
+    timestamp = normalized.get("timestamp") or normalized.get("end_timestamp")
+    if not timestamp:
+        timestamp = normalized.get("start_timestamp")
+    if not timestamp:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    normalized.setdefault("timestamp", timestamp)
+    normalized.setdefault("start_timestamp", normalized.get("start_timestamp") or timestamp)
+    normalized.setdefault("end_timestamp", normalized.get("end_timestamp") or timestamp)
+    normalized.setdefault("erase_tool", normalized.get("erase_tool", ""))
+    normalized.setdefault("transport", normalized.get("transport", ""))
+    normalized.setdefault("fio_ok", normalized.get("fio_ok"))
+
     exists = os.path.exists(path)
     with open(path, "a", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, delimiter=";", fieldnames=fieldnames)
@@ -82,7 +96,7 @@ def append_wipe_log(entry: Dict) -> None:
             writer.writeheader()
         sanitized = {}
         for key in fieldnames:
-            value = entry.get(key, "")
+            value = normalized.get(key, "")
             if isinstance(value, bool):
                 sanitized[key] = "True" if value else "False"
             else:

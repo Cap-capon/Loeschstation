@@ -78,12 +78,13 @@ def _safe_number(value):
 
 
 def _entry_id(entry: Dict, idx: int) -> str:
-    return (
-        (entry.get("serial") or "").strip()
-        or (entry.get("device_path") or "").strip()
-        or (entry.get("bay") or "").strip()
-        or f"synthetic-{idx}"
-    )
+    serial = (entry.get("serial") or "").strip()
+    if serial and serial != "–":
+        return serial
+    device_path = (entry.get("device_path") or "").strip()
+    if device_path:
+        return device_path
+    return f"row-{idx}"
 
 
 def _normalized_entry(entry: Dict) -> Dict:
@@ -97,11 +98,20 @@ def _normalized_entry(entry: Dict) -> Dict:
             normalized[key] = default_value
         return normalized[key]
 
-    end_timestamp = normalized.get("end_timestamp") or normalized.get("timestamp")
-    start_timestamp = normalized.get("start_timestamp") or end_timestamp
-    timestamp = end_timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    end_timestamp = (
+        normalized.get("end_timestamp")
+        or normalized.get("erase_timestamp")
+        or normalized.get("timestamp")
+    )
+    start_timestamp = (
+        normalized.get("start_timestamp")
+        or normalized.get("erase_timestamp")
+        or normalized.get("timestamp")
+        or end_timestamp
+    )
+    timestamp = end_timestamp or start_timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     normalized["timestamp"] = timestamp
-    normalized["start_timestamp"] = _safe_text(start_timestamp)
+    normalized["start_timestamp"] = _safe_text(start_timestamp or timestamp)
     normalized["end_timestamp"] = _safe_text(end_timestamp or timestamp)
     normalized["bay"] = _safe_text(normalized.get("bay") or normalized.get("device_path"))
     normalized["device_path"] = _safe_text(normalized.get("device_path") or normalized.get("bay"))
@@ -386,7 +396,25 @@ def create_certificate(entry: Dict) -> Tuple[str, str]:
     _register_fonts()
 
     _, cert_dir, _, _ = _paths()
-    normalized = _normalized_entry(entry)
+    def _fallback_entry(raw: Dict) -> Dict:
+        base = raw.copy() if isinstance(raw, dict) else {}
+        timestamp = (
+            base.get("timestamp")
+            or base.get("end_timestamp")
+            or base.get("erase_timestamp")
+            or base.get("start_timestamp")
+            or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        )
+        base.setdefault("timestamp", timestamp)
+        base.setdefault("end_timestamp", base.get("erase_timestamp") or timestamp)
+        base.setdefault("start_timestamp", base.get("start_timestamp") or timestamp)
+        return base
+
+    prepared_entry = _fallback_entry(entry)
+    try:
+        normalized = _normalized_entry(prepared_entry)
+    except Exception:
+        normalized = _fallback_entry(prepared_entry)  # fail safe
     checksum = _checksum_for_entry(normalized)
     pdf_name, json_name = _build_filename(normalized)
     pdf_path = os.path.join(cert_dir, pdf_name)

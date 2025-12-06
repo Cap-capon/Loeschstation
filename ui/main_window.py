@@ -436,7 +436,21 @@ class MainWindow(QMainWindow):
         log_dir = config_manager.get_log_dir(self.config)
         snapshot_path = os.path.join(log_dir, "devices_snapshot.json")
         os.makedirs(log_dir, exist_ok=True)
-        payload = {"exported_at": datetime.now().isoformat(), "devices": self.devices}
+        devices: List[Dict] = []
+        for dev in self.devices:
+            snap = dev.copy()
+            timestamp = snap.get("erase_timestamp") or snap.get("timestamp")
+            if not timestamp:
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            snap.setdefault("timestamp", timestamp)
+            snap.setdefault("end_timestamp", snap.get("end_timestamp") or snap.get("erase_timestamp") or timestamp)
+            snap.setdefault("start_timestamp", snap.get("start_timestamp") or snap.get("timestamp") or timestamp)
+            snap.setdefault("erase_tool", snap.get("erase_tool", ""))
+            snap.setdefault("transport", snap.get("transport", ""))
+            snap.setdefault("fio_ok", snap.get("fio_ok"))
+            devices.append(snap)
+
+        payload = {"exported_at": datetime.now().isoformat(), "devices": devices}
         try:
             with open(snapshot_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2, ensure_ascii=False)
@@ -445,15 +459,27 @@ class MainWindow(QMainWindow):
 
     # --- Logging der Testergebnisse / Löschvorgänge -----------------------
     def _log_device_event(self, device: Dict, data: Dict) -> None:
-        start_timestamp = data.get("start_timestamp") or device.get("start_timestamp")
-        end_timestamp = data.get("erase_timestamp") or data.get("timestamp")
-        if not end_timestamp:
-            end_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        timestamp = end_timestamp
+        # PATCH-5: unify & repair timestamps
+        start_ts = (
+            data.get("start_timestamp")
+            or device.get("start_timestamp")
+            or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        )
+
+        end_ts = (
+            data.get("end_timestamp")
+            or data.get("erase_timestamp")
+            or data.get("timestamp")
+            or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        )
+
+        # Guarantee final timestamp
+        timestamp = end_ts
         entry = {
             "timestamp": timestamp,
-            "start_timestamp": start_timestamp or timestamp,
-            "end_timestamp": end_timestamp,
+            "start_timestamp": start_ts,
+            "end_timestamp": end_ts,
+            "erase_timestamp": end_ts,
             "bay": device.get("bay") or device.get("device"),
             "device_path": device.get("path") or device.get("device"),
             "size": device.get("size", ""),
@@ -464,13 +490,25 @@ class MainWindow(QMainWindow):
             "fio_iops": data.get("fio_iops", device.get("fio_iops")),
             "fio_lat": data.get("fio_lat", device.get("fio_lat")),
             "fio_ok": data.get("fio_ok", device.get("fio_ok")),
-            "erase_method": data.get("erase_method", device.get("erase_method", "")),
-            "erase_standard": data.get("erase_standard", device.get("erase_standard", "")),
-            "erase_tool": data.get("erase_tool", device.get("erase_tool", "")),
+            "erase_method": data.get("erase_method", device.get("erase_method") or ""),
+            "erase_standard": data.get("erase_standard", device.get("erase_standard") or ""),
+            "erase_tool": data.get("erase_tool", device.get("erase_tool") or ""),
             "erase_ok": data.get("erase_ok", device.get("erase_ok")),
             "command": data.get("command") or device.get("command") or "",
             "mapping_hint": data.get("mapping_hint") or device.get("mapping_hint") or "",
         }
+        device.update(
+            {
+                "start_timestamp": entry.get("start_timestamp"),
+                "end_timestamp": entry.get("end_timestamp"),
+                "erase_timestamp": entry.get("erase_timestamp"),
+                "erase_method": entry.get("erase_method"),
+                "erase_standard": entry.get("erase_standard"),
+                "erase_tool": entry.get("erase_tool"),
+                "erase_ok": entry.get("erase_ok"),
+                "fio_ok": entry.get("fio_ok"),
+            }
+        )
         try:
             append_wipe_log(entry)
         except Exception as exc:  # pragma: no cover - defensive
