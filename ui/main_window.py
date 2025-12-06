@@ -5,8 +5,8 @@ import sys
 from datetime import datetime
 from typing import List, Dict
 
-from PySide6.QtCore import Qt, QByteArray, QEvent, QSize, QTimer
-from PySide6.QtGui import QIcon, QTransform
+from PySide6.QtCore import Qt, QByteArray, QEvent, QSize
+from PySide6.QtGui import QIcon, QMovie
 from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -62,11 +62,7 @@ class MainWindow(QMainWindow):
         self.debug_logger = setup_debug_logger(self.config)
         self.expert_mode = ExpertMode(self.config, self._on_expert_change)
         self.secure_planner = secure_erase.SecureErasePlanner(False)
-        self._settings_icon_pixmap = None
-        self._settings_timer = QTimer(self)
-        self._settings_timer.setInterval(40)
-        self._settings_timer.timeout.connect(self._rotate_settings_icon)
-        self._settings_angle = 0
+        self._settings_frame_connected = False
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -224,47 +220,33 @@ class MainWindow(QMainWindow):
     def eventFilter(self, obj, event):
         if obj is self.btn_settings:
             if event.type() == QEvent.Enter:
-                self._start_settings_animation()
+                self.settings_movie.start()
+                self.btn_settings.setIcon(QIcon(self.settings_movie.currentPixmap()))
+                if not self._settings_frame_connected:
+                    self.settings_movie.frameChanged.connect(
+                        lambda: self.btn_settings.setIcon(QIcon(self.settings_movie.currentPixmap()))
+                    )
+                    self._settings_frame_connected = True
             elif event.type() == QEvent.Leave:
-                self._stop_settings_animation()
+                self.settings_movie.stop()
+                self.settings_movie.jumpToFrame(0)
+                self.btn_settings.setIcon(QIcon(self.settings_movie.currentPixmap()))
         return super().eventFilter(obj, event)
 
     def _build_settings_button(self) -> QToolButton:
         btn = QToolButton()
-        btn.setIcon(self._load_icon(icons.ICON_SETTINGS))
+        gif_path = os.path.join(os.path.dirname(__file__), "..", "img", "settings_gear.gif")
+        self.settings_movie = QMovie(gif_path)
+        self.settings_movie.jumpToFrame(0)
+        btn.setIcon(QIcon(gif_path))
         btn.setToolTip("Einstellungen")
         btn.setAutoRaise(True)
         btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
         btn.setStyleSheet("QToolButton { border: none; padding: 2px; margin: 0; }")
-        btn.setIconSize(QSize(28, 28))
+        btn.setIconSize(QSize(32, 32))
         btn.clicked.connect(self.open_settings)
         btn.installEventFilter(self)
-        self._settings_icon_pixmap = btn.icon().pixmap(32, 32)
         return btn
-
-    def _start_settings_animation(self) -> None:
-        """PATCH-2 FIX: Sanfte Rotation des Zahnrad-SVGs per Timer."""
-
-        if self._settings_icon_pixmap is None:
-            return
-        self._settings_angle = 0
-        if not self._settings_timer.isActive():
-            self._settings_timer.start()
-
-    def _rotate_settings_icon(self) -> None:
-        if self._settings_icon_pixmap is None:
-            return
-        self._settings_angle = (self._settings_angle + 5) % 360
-        rotated = self._settings_icon_pixmap.transformed(
-            QTransform().rotate(self._settings_angle), Qt.SmoothTransformation
-        )
-        self.btn_settings.setIcon(QIcon(rotated))
-
-    def _stop_settings_animation(self) -> None:
-        self._settings_timer.stop()
-        self._settings_angle = 0
-        if self._settings_icon_pixmap is not None:
-            self.btn_settings.setIcon(QIcon(self._settings_icon_pixmap))
 
     def _create_tile_button(self, text: str, func, icon_path: str | None = None) -> QPushButton:
         btn = QPushButton(text)
