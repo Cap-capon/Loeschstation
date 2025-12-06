@@ -17,12 +17,13 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
 )
 
-base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-script = os.path.join(base_dir, "certificates", "export_certificates_gui.py")
-if base_dir not in sys.path:
-    sys.path.insert(0, base_dir)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(BASE_DIR)
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
 import export_certificates as cert_core
+cert_core.ensure_dirs()
 
 
 class CertificateGUI(QWidget):
@@ -105,22 +106,23 @@ class CertificateGUI(QWidget):
         for entry in self.entries:
             fio_text = cert_core._format_fio_text(entry)
             erase_text = cert_core._format_erase_text(entry)
+            mapping = entry.get("mapping_hint") or "–"
             rows.append(
                 {
-                    "timestamp": entry.get("timestamp", ""),
-                    "bay": entry.get("bay", ""),
-                    "path": entry.get("device_path", ""),
-                    "size": entry.get("size", ""),
-                    "model": entry.get("model", ""),
-                    "serial": entry.get("serial", ""),
-                "transport": entry.get("transport", ""),
-                "fio": fio_text,
-                "erase": erase_text,
-                "standard": entry.get("erase_standard", ""),
-                "command": entry.get("command", ""),
-                "mapping": entry.get("mapping_hint", ""),
-            }
-        )
+                    "timestamp": entry.get("timestamp") or "–",
+                    "bay": entry.get("bay") or entry.get("device_path") or "–",
+                    "path": entry.get("device_path") or entry.get("bay") or "–",
+                    "size": entry.get("size") or "–",
+                    "model": entry.get("model") or "–",
+                    "serial": entry.get("serial") or "–",
+                    "transport": entry.get("transport") or "–",
+                    "fio": fio_text,
+                    "erase": erase_text,
+                    "standard": entry.get("erase_standard") or "–",
+                    "command": entry.get("command") or "–",
+                    "mapping": mapping,
+                }
+            )
         return rows
 
     def load_entries(self):

@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import shlex
 import subprocess
 from typing import Dict, List
@@ -8,6 +9,9 @@ from modules import config_manager, device_scan
 
 
 logger = logging.getLogger("loeschstation")
+# PATCH-2 FIX: Verzeichnisse sicherstellen, bevor Logs/Exports geschrieben werden
+os.makedirs(config_manager.get_log_dir(), exist_ok=True)
+os.makedirs(config_manager.get_cert_dir(), exist_ok=True)
 
 
 PRESETS = {
@@ -49,25 +53,47 @@ PRESETS = {
 }
 
 
-def run_preset(device: str, preset: str) -> None:
+def run_preset(device: str | Dict, preset: str) -> None:
     """Startet FIO in einem Terminal, ohne Ergebnisse auszuwerten."""
 
+    info = device if isinstance(device, dict) else {"path": device}
+    target = resolve_target(info)
     args = PRESETS.get(preset, PRESETS["quick-read"]).copy()
-    args = [a.format(device=device) for a in args]
+    args = [a.format(device=target) for a in args]
     _spawn_with_sudo(args)
 
 
-def _resolve_target_path(device: str) -> str | None:
-    if not device:
-        return None
-    if not device.startswith("/dev/megaraid/"):
-        return device
+def resolve_target(dev: Dict) -> str:
+    """
+    PATCH-2 FIX: Zentrale und robuste Auflösung von FIO-Zielen.
 
-    resolved = device_scan.resolve_megaraid_target({"path": device})
-    return resolved
+    - MegaRAID-Pfade werden über :func:`device_scan.resolve_megaraid_target` auf
+      ein Linux-Device (/dev/sdX|/dev/nvmeX) gemappt.
+    - Bei erfolgreichem Mapping wird ein Hinweis in ``mapping_hint`` hinterlegt,
+      damit UI/Logs die Korrektur dokumentieren können.
+    - Unerkennbare Ziele führen zu einer klaren RuntimeError-Meldung.
+    """
+
+    raw_path = dev.get("target") or dev.get("path") or dev.get("device") or ""
+    if not raw_path:
+        raise RuntimeError("FIO-Device nicht angegeben")
+
+    if raw_path.startswith("/dev/megaraid/"):
+        resolved = device_scan.resolve_megaraid_target(dev)
+        if resolved and str(resolved).startswith(("/dev/sd", "/dev/nvme")):
+            dev["mapping_hint"] = f"MegaRAID Mapping: {raw_path} → {resolved}"
+            return resolved
+        raise RuntimeError(
+            "MegaRAID-Ziel konnte nicht auf /dev/sdX oder /dev/nvmeY gemappt werden"
+        )
+
+    if str(raw_path).startswith(("/dev/sd", "/dev/nvme")):
+        return raw_path
+
+    raise RuntimeError("FIO-Device nicht resolvable: ungültiger Pfad")
 
 
-def run_preset_with_result(device: str, preset: str) -> Dict:
+def run_preset_with_result(device: Dict, preset: str) -> Dict:
     """
     Führt ein FIO-Preset synchron aus und liefert ein Ergebnis-Dict zurück.
 
@@ -77,10 +103,11 @@ def run_preset_with_result(device: str, preset: str) -> Dict:
     werden können.
     """
 
-    resolved = _resolve_target_path(device)
-    if not resolved or not str(resolved).startswith(("/dev/sd", "/dev/nvme")):
-        logger.error("FIO-Device not resolvable: %s", device)
-        return {"ok": False, "error": "FIO-Device not resolvable"}
+    try:
+        resolved = resolve_target(device if isinstance(device, dict) else {"path": device})
+    except RuntimeError as exc:
+        logger.error("FIO-Target konnte nicht aufgelöst werden: %s", exc)
+        return {"ok": False, "error": str(exc)}
 
     args = PRESETS.get(preset, PRESETS["quick-read"]).copy()
     args = [a.format(device=resolved) for a in args]
@@ -100,11 +127,14 @@ def run_preset_with_result(device: str, preset: str) -> Dict:
     stdout = proc.stdout or ""
     stderr = proc.stderr or ""
     result = _parse_fio_output(stdout)
-    result["ok"] = is_fio_result_ok(result, proc.returncode)
+    fio_ok = is_fio_result_ok(result, proc.returncode)
+    result["ok"] = fio_ok
     result["command"] = " ".join(cmd)
     result["target"] = resolved
-    if proc.returncode != 0 or not result.get("ok"):
-        error_hint = stderr.strip() or stdout.strip() or "Unbekannter Fehler"
+    if device.get("mapping_hint"):
+        result["mapping_hint"] = device.get("mapping_hint")
+    if proc.returncode != 0 or not fio_ok:
+        error_hint = result.get("error") or stderr.strip() or stdout.strip() or "Unbekannter Fehler"
         logger.error(
             "FIO fehlgeschlagen (rc=%s): %s | stdout=%s",
             proc.returncode,
@@ -148,6 +178,7 @@ def _parse_fio_output(stdout: str) -> Dict:
         data = json.loads(stdout)
     except json.JSONDecodeError:
         logger.error("FIO-Output ist kein gültiges JSON: %s", stdout)
+        metrics["error"] = "FIO JSON konnte nicht geparst werden"
         return metrics
 
     jobs = data.get("jobs", []) or []

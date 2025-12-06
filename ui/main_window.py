@@ -56,10 +56,17 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(self._load_icon(icons.ICON_NWIPE))
 
         self.config = load_config()
+        # PATCH-2 FIX: Sicherstellen, dass Log- und Zertifikatsordner existieren
+        os.makedirs(config_manager.get_log_dir(self.config), exist_ok=True)
+        os.makedirs(config_manager.get_cert_dir(self.config), exist_ok=True)
         self.debug_logger = setup_debug_logger(self.config)
         self.expert_mode = ExpertMode(self.config, self._on_expert_change)
         self.secure_planner = secure_erase.SecureErasePlanner(False)
         self._settings_icon_pixmap = None
+        self._settings_timer = QTimer(self)
+        self._settings_timer.setInterval(40)
+        self._settings_timer.timeout.connect(self._rotate_settings_icon)
+        self._settings_angle = 0
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -73,6 +80,8 @@ class MainWindow(QMainWindow):
         status_row = QHBoxLayout()
         status_row.addWidget(self.status_label)
         status_row.addStretch()
+        self.btn_settings = self._build_settings_button()
+        status_row.addWidget(self.btn_settings)
         main_layout.addLayout(status_row)
 
         self.main_splitter = QSplitter(Qt.Vertical)
@@ -89,7 +98,7 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self.summary_bar)
 
         self.device_table = QTableWidget()
-        self.device_table.setColumnCount(14)
+        self.device_table.setColumnCount(15)
         self.device_table.setHorizontalHeaderLabels([
             "Bay",
             "Pfad",
@@ -97,6 +106,7 @@ class MainWindow(QMainWindow):
             "Modell",
             "Seriennummer",
             "Transport",
+            "Mapping",
             "FIO MB/s",
             "FIO IOPS",
             "FIO Latenz",
@@ -126,17 +136,9 @@ class MainWindow(QMainWindow):
         self.btn_open_logs.clicked.connect(self.open_log_folder)
         btn_row.addWidget(self.btn_open_logs)
 
-        self.btn_settings = QToolButton()
-        self.btn_settings.setIcon(self._load_icon(icons.ICON_SETTINGS))
-        self.btn_settings.setToolTip("Einstellungen")
-        self.btn_settings.setAutoRaise(True)
-        self.btn_settings.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        self.btn_settings.setStyleSheet("QToolButton { border: none; padding: 0; margin: 0; }")
-        self.btn_settings.setIconSize(QSize(24, 24))
-        self.btn_settings.clicked.connect(self.open_settings)
-        self.btn_settings.installEventFilter(self)
-        self._settings_icon_pixmap = self.btn_settings.icon().pixmap(24, 24)
-        btn_row.addWidget(self.btn_settings)
+        self.btn_toggle_expert = QPushButton("Expertenmodus")
+        self.btn_toggle_expert.clicked.connect(self.toggle_expert)
+        btn_row.addWidget(self.btn_toggle_expert)
 
         btn_row.addStretch()
 
@@ -145,6 +147,7 @@ class MainWindow(QMainWindow):
         self.btn_cert_gui.clicked.connect(self.launch_cert_gui)
         btn_row.addWidget(self.btn_cert_gui)
 
+        top_layout.addLayout(btn_row)
         top_layout.addWidget(self.device_table)
         self.main_splitter.addWidget(top_container)
 
@@ -157,8 +160,6 @@ class MainWindow(QMainWindow):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(8)
         left_panel.setLayout(left_layout)
-
-        left_layout.addLayout(btn_row)
 
         self.status_log = QTextEdit()
         self.status_log.setReadOnly(True)
@@ -184,6 +185,8 @@ class MainWindow(QMainWindow):
         scroll.setWidget(right_panel)
         self.bottom_splitter.addWidget(scroll)
         self.bottom_splitter.setSizes([900, 400])
+        self.bottom_splitter.setStretchFactor(0, 3)
+        self.bottom_splitter.setStretchFactor(1, 2)
 
         self.main_splitter.addWidget(self.bottom_splitter)
         self.main_splitter.setSizes([600, 300])
@@ -221,26 +224,47 @@ class MainWindow(QMainWindow):
     def eventFilter(self, obj, event):
         if obj is self.btn_settings:
             if event.type() == QEvent.Enter:
-                self._animate_settings_icon()
+                self._start_settings_animation()
             elif event.type() == QEvent.Leave:
-                self._reset_settings_icon()
+                self._stop_settings_animation()
         return super().eventFilter(obj, event)
 
-    def _animate_settings_icon(self):
-        """Leichte Rotation beim Hover für das Zahnrad-Icon."""
+    def _build_settings_button(self) -> QToolButton:
+        btn = QToolButton()
+        btn.setIcon(self._load_icon(icons.ICON_SETTINGS))
+        btn.setToolTip("Einstellungen")
+        btn.setAutoRaise(True)
+        btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        btn.setStyleSheet("QToolButton { border: none; padding: 2px; margin: 0; }")
+        btn.setIconSize(QSize(28, 28))
+        btn.clicked.connect(self.open_settings)
+        btn.installEventFilter(self)
+        self._settings_icon_pixmap = btn.icon().pixmap(32, 32)
+        return btn
+
+    def _start_settings_animation(self) -> None:
+        """PATCH-2 FIX: Sanfte Rotation des Zahnrad-SVGs per Timer."""
 
         if self._settings_icon_pixmap is None:
             return
+        self._settings_angle = 0
+        if not self._settings_timer.isActive():
+            self._settings_timer.start()
+
+    def _rotate_settings_icon(self) -> None:
+        if self._settings_icon_pixmap is None:
+            return
+        self._settings_angle = (self._settings_angle + 5) % 360
         rotated = self._settings_icon_pixmap.transformed(
-            QTransform().rotate(20), Qt.SmoothTransformation
+            QTransform().rotate(self._settings_angle), Qt.SmoothTransformation
         )
         self.btn_settings.setIcon(QIcon(rotated))
-        QTimer.singleShot(180, self._reset_settings_icon)
 
-    def _reset_settings_icon(self):
-        if self._settings_icon_pixmap is None:
-            return
-        self.btn_settings.setIcon(QIcon(self._settings_icon_pixmap))
+    def _stop_settings_animation(self) -> None:
+        self._settings_timer.stop()
+        self._settings_angle = 0
+        if self._settings_icon_pixmap is not None:
+            self.btn_settings.setIcon(QIcon(self._settings_icon_pixmap))
 
     def _create_tile_button(self, text: str, func, icon_path: str | None = None) -> QPushButton:
         btn = QPushButton(text)
@@ -303,9 +327,12 @@ class MainWindow(QMainWindow):
             self._create_tile_button("SMART Scan (CLI)", self.run_smartctl_cli, icons.ICON_SMARTCLI),
             self._create_tile_button("NVMe Info", self.run_nvme_info, icons.ICON_NVMEINFO),
         ]
-        self.btn_fio = self._create_tile_button("FIO (Preset)", self.run_fio, icons.ICON_FIO)
+        self.btn_fio = self._create_tile_button("FIO Benchmark", self.run_fio, icons.ICON_FIO)
+        self.btn_fio_stress = self._create_tile_button(
+            "FIO Stresstest", self.run_fio_stress, icons.ICON_FIO
+        )
         self.btn_badblocks = self._create_tile_button("Badblocks", self.run_badblocks, icons.ICON_BADBLOCKS)
-        buttons.extend([self.btn_fio, self.btn_badblocks])
+        buttons.extend([self.btn_fio, self.btn_fio_stress, self.btn_badblocks])
         return self._build_grid_box("Diagnose & Tests", buttons, columns=3)
 
     def _build_wipe_group(self) -> QGroupBox:
@@ -470,6 +497,9 @@ class MainWindow(QMainWindow):
                 resolved = device_scan.resolve_megaraid_target(normalized)
                 if resolved:
                     normalized["target"] = resolved
+                    normalized["mapping_hint"] = normalized.get(
+                        "mapping_hint", f"MegaRAID Mapping: {normalized.get('path')} → {resolved}"
+                    )
             elif normalized.get("path"):
                 normalized["target"] = normalized.get("path")
 
@@ -527,6 +557,7 @@ class MainWindow(QMainWindow):
                     "model",
                     "serial",
                     "transport",
+                    "mapping_hint",
                     "fio_bw",
                     "fio_iops",
                     "fio_lat",
@@ -817,21 +848,23 @@ class MainWindow(QMainWindow):
             self._populate_table()
             self._handle_runner_error(exc)
 
-    def run_fio(self):
+    def _run_fio_for_devices(self, preset: str, label: str) -> None:
         devices = self._ensure_devices_selected()
         if not devices:
             return
         devices = self._filter_erasable(devices)
         if not devices:
             return
-        preset = self.config.get("default_fio_preset", "quick-read")
         try:
             for dev in devices:
-                target = dev.get("target") or dev["device"]
-                self.status_logger.info(f"INFO: FIO gestartet ({preset}) auf {dev['device']} ({target})")
-                result = fio_runner.run_preset_with_result(target, preset)
+                self.status_logger.info(
+                    f"INFO: FIO gestartet ({label}) auf {dev.get('device')} ({self._device_target(dev)})"
+                )
+                result = fio_runner.run_preset_with_result(dev, preset)
                 if result.get("target"):
                     dev["target"] = result.get("target")
+                if result.get("mapping_hint"):
+                    dev["mapping_hint"] = result.get("mapping_hint")
                 if not result.get("ok"):
                     error_hint = result.get("error") or "FIO konnte keine Kennzahlen liefern."
                     updates = {
@@ -840,6 +873,7 @@ class MainWindow(QMainWindow):
                         "fio_lat": None,
                         "fio_ok": False,
                         "command": result.get("command"),
+                        "mapping_hint": result.get("mapping_hint", ""),
                     }
                     self._apply_device_updates(dev, updates)
                     self._log_device_event(dev, updates)
@@ -849,46 +883,31 @@ class MainWindow(QMainWindow):
                     raise RuntimeError(
                         f"FIO konnte nicht abgeschlossen werden – Details im Debug-Log. Fehler: {error_hint}"
                     )
-                self._apply_device_updates(
-                    dev,
-                    {
-                        "fio_bw": round(result.get("bw_mb_s"), 2) if result.get("bw_mb_s") is not None else None,
-                        "fio_iops": round(result.get("iops"), 2) if result.get("iops") is not None else None,
-                        "fio_lat": round(result.get("lat_ms"), 3) if result.get("lat_ms") is not None else None,
-                        "fio_ok": result.get("ok"),
-                        "command": result.get("command"),
-                    },
-                )
+                updates = {
+                    "fio_bw": round(result.get("bw_mb_s"), 2) if result.get("bw_mb_s") is not None else None,
+                    "fio_iops": round(result.get("iops"), 2) if result.get("iops") is not None else None,
+                    "fio_lat": round(result.get("lat_ms"), 3) if result.get("lat_ms") is not None else None,
+                    "fio_ok": result.get("ok"),
+                    "command": result.get("command"),
+                    "mapping_hint": result.get("mapping_hint", ""),
+                }
+                self._apply_device_updates(dev, updates)
                 self.status_logger.info(
                     f"INFO: FIO-Ergebnis für {dev['device']} – "
                     f"{result.get('bw_mb_s', '–')} MB/s, {result.get('iops', '–')} IOPS, "
                     f"{result.get('lat_ms', '–')} ms, OK={result.get('ok')}"
                 )
-                self._log_device_event(
-                    dev,
-                    {
-                        "fio_bw": result.get("bw_mb_s"),
-                        "fio_iops": result.get("iops"),
-                        "fio_lat": result.get("lat_ms"),
-                        "fio_ok": result.get("ok"),
-                        "command": result.get("command"),
-                    },
-                )
-            self._populate_table()
-        except RuntimeError as exc:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            for dev in devices:
-                updates = {
-                    "erase_method": "Nwipe (Default)",
-                    "erase_standard": standard_label,
-                    "erase_ok": False,
-                    "command": "",
-                    "timestamp": now,
-                }
-                self._apply_device_updates(dev, updates)
                 self._log_device_event(dev, updates)
             self._populate_table()
+        except RuntimeError as exc:
             self._handle_runner_error(exc)
+
+    def run_fio(self):
+        preset = self.config.get("default_fio_preset", "quick-read")
+        self._run_fio_for_devices(preset, "Benchmark")
+
+    def run_fio_stress(self):
+        self._run_fio_for_devices("full", "Stresstest")
 
     def run_gsmartcontrol(self):
         dev = self._require_single_device()

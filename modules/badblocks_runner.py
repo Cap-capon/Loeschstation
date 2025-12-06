@@ -1,8 +1,12 @@
 import datetime
+import os
 import subprocess
 from typing import Dict
 
 from modules import config_manager, secure_erase
+
+os.makedirs(config_manager.get_log_dir(), exist_ok=True)
+os.makedirs(config_manager.get_cert_dir(), exist_ok=True)
 
 
 MODES = {

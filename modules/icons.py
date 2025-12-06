@@ -23,7 +23,7 @@ ICON_SECURE_ERASE = "edit-delete"
 ICON_BLANCCO_OS = ICON_BLANCCO
 ICON_CERT_GUI = "text-x-generic"
 ICON_LOG_FOLDER = "folder"
-ICON_SETTINGS = "preferences-system"
+ICON_SETTINGS = os.path.join(BASE_IMG_DIR, "settings_gear.svg")
 
 # Default-Icon für unbekannte Tools
 ICON_DEFAULT = "drive-harddisk"
