@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 import shlex
 import subprocess
 from typing import Dict, List, Tuple
@@ -19,6 +20,8 @@ from PySide6.QtWidgets import QMessageBox
 from modules import config_manager, device_scan
 
 logger = logging.getLogger("loeschstation")
+os.makedirs(config_manager.get_log_dir(), exist_ok=True)
+os.makedirs(config_manager.get_cert_dir(), exist_ok=True)
 
 
 STANDARD_LABELS = {

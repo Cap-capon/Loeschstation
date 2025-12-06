@@ -63,6 +63,10 @@ def ensure_dirs():
     os.makedirs(cert_dir, exist_ok=True)
 
 
+# PATCH-2 FIX: Ordner beim Import anlegen, damit alle Writer stabil sind
+ensure_dirs()
+
+
 def _safe_number(value):
     try:
         return float(value)

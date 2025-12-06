@@ -211,6 +211,8 @@ def _collect_pd_details(
         if existing:
             details[(eid, slot)] = existing
 
+    regex_fallback = re.compile(r"(Serial|S/N|SN)[^\w]*([A-Za-z0-9]{4,})", re.IGNORECASE)
+
     def _scan(value, key_hint: Optional[str] = None):
         if isinstance(value, dict):
             eid, slot = _parse_eid_slot(value)
@@ -219,8 +221,20 @@ def _collect_pd_details(
                 if match:
                     eid = _safe_int(match.group(1))
                     slot = _safe_int(match.group(2))
-            serial, model = _extract_serial_and_model(value)
+            serial, model = _extract_serial_and_model(value, regex_fallback)
             os_path = _extract_os_path(value, controller_id, eid, slot)
+            if (not serial or not model) and os_path:
+                # PATCH-2 FIX: Immer per udev nachziehen, wenn StorCLI keine Werte liefert
+                udev_serial, udev_model = _udev_serial_and_model(os_path)
+                serial = serial or udev_serial
+                model = model or udev_model
+            if not serial:
+                for nested_value in value.values():
+                    if isinstance(nested_value, str):
+                        match = regex_fallback.search(nested_value)
+                        if match:
+                            serial = match.group(2)
+                            break
             if serial or model or os_path:
                 _store_detail(eid, slot, str(serial or ""), str(model or ""), os_path)
             for nested_key, nested_value in value.items():
@@ -235,14 +249,19 @@ def _collect_pd_details(
     return details
 
 
-def _extract_serial_and_model(value: Dict) -> Tuple[str, str]:
+def _extract_serial_and_model(value: Dict, regex_fallback: Optional[re.Pattern] = None) -> Tuple[str, str]:
     serial = value.get("SN") or value.get("S/N") or value.get("Serial Number") or ""
     model = value.get("Model") or value.get("MODEL") or ""
 
+    inquiry = value.get("Inquiry Data") or value.get("Inquiry")
     if not serial:
-        inquiry = value.get("Inquiry Data") or value.get("Inquiry")
         if isinstance(inquiry, dict):
-            serial = inquiry.get("SN") or inquiry.get("Serial Number") or inquiry.get("SerialNumber") or ""
+            serial = (
+                inquiry.get("SN")
+                or inquiry.get("Serial Number")
+                or inquiry.get("SerialNumber")
+                or ""
+            )
             if not model:
                 model = inquiry.get("Model") or inquiry.get("MODEL") or inquiry.get("Model Number") or ""
         elif isinstance(inquiry, str):
@@ -259,22 +278,27 @@ def _extract_serial_and_model(value: Dict) -> Tuple[str, str]:
                 if serial:
                     break
 
+    def _deep_regex_search(obj) -> Optional[str]:
+        if isinstance(obj, dict):
+            for v in obj.values():
+                found = _deep_regex_search(v)
+                if found:
+                    return found
+        elif isinstance(obj, list):
+            for item in obj:
+                found = _deep_regex_search(item)
+                if found:
+                    return found
+        elif isinstance(obj, str) and regex_fallback:
+            match = regex_fallback.search(obj)
+            if match:
+                return match.group(2)
+        return None
+
     if not serial:
-        for nested_value in value.values():
-            if isinstance(nested_value, str):
-                match = re.search(r"([Ss][Nn]|Serial)[^A-Za-z0-9]*([A-Za-z0-9]{4,})", nested_value)
-                if match:
-                    serial = match.group(2)
-                    break
-            if isinstance(nested_value, dict):
-                for inner in nested_value.values():
-                    if isinstance(inner, str):
-                        match = re.search(r"([Ss][Nn]|Serial)[^A-Za-z0-9]*([A-Za-z0-9]{4,})", inner)
-                        if match:
-                            serial = match.group(2)
-                            break
-                if serial:
-                    break
+        regex_val = _deep_regex_search(value)
+        if regex_val:
+            serial = regex_val
 
     return str(serial or ""), str(model or "")
 
@@ -384,7 +408,11 @@ def _get_pd_details(controller_id: int, eid: int, slot: int) -> Dict[str, str]:
             continue
         serial, model = _extract_serial_and_model(value)
         os_path = _extract_os_path(value, controller_id, eid, slot)
-        if serial or model:
+        if (not serial or not model) and os_path:
+            fallback_serial, fallback_model = _udev_serial_and_model(os_path)
+            serial = serial or fallback_serial
+            model = model or fallback_model
+        if serial or model or os_path:
             return {
                 "serial": str(serial or ""),
                 "model": str(model or ""),

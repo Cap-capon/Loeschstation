@@ -1,5 +1,6 @@
 import datetime
 import logging
+import os
 import shlex
 import subprocess
 from typing import Dict, List
@@ -8,6 +9,8 @@ from modules import config_manager, secure_erase
 
 
 logger = logging.getLogger("loeschstation")
+os.makedirs(config_manager.get_log_dir(), exist_ok=True)
+os.makedirs(config_manager.get_cert_dir(), exist_ok=True)
 
 
 def _resolve_target(dev: Dict) -> str:

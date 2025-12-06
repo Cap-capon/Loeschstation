@@ -23,6 +23,9 @@ class StatusLogger:
 
 def setup_debug_logger(config: dict) -> logging.Logger:
     log_path = config.get("debug_log", config_manager.DEFAULT_CONFIG["debug_log"])
+    # PATCH-2 FIX: sicherstellen, dass Log- und Zertifikatsverzeichnisse existieren
+    os.makedirs(config_manager.get_log_dir(config), exist_ok=True)
+    os.makedirs(config_manager.get_cert_dir(config), exist_ok=True)
     logger = logging.getLogger("loeschstation")
     if logger.handlers:
         return logger
@@ -49,6 +52,7 @@ def append_wipe_log(entry: Dict) -> None:
     """Schreibt einen Eintrag in wipe_log.csv (Semikolon-getrennt)."""
 
     path = _wipe_log_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     fieldnames = [
         "timestamp",
         "bay",
