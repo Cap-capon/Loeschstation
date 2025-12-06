@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QPushButton,
+    QComboBox,
     QLabel,
     QTableWidget,
     QTableWidgetItem,
@@ -308,12 +309,53 @@ class MainWindow(QMainWindow):
         return self._build_grid_box("Diagnose & Tests", buttons, columns=3)
 
     def _build_wipe_group(self) -> QGroupBox:
+        box = QGroupBox("Löschen / Secure Erase")
+        layout = QVBoxLayout()
+        layout.setSpacing(10)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        # Tool- und Standard-Auswahl im selben Stil wie die Buttons halten
+        self.erase_tool_combo = QComboBox()
+        self.erase_tool_combo.addItem("Nwipe", "nwipe")
+        self.erase_tool_combo.addItem("Secure Erase (ATA / NVMe)", "secure")
+        self.erase_tool_combo.addItem("Badblocks Destructive", "badblocks")
+        self.erase_tool_combo.setMinimumHeight(38)
+        self.erase_tool_combo.setStyleSheet(
+            "QComboBox { padding: 6px 10px; font-weight: 600; }"
+            "QComboBox::drop-down { width: 24px; }"
+        )
+
+        self.erase_standard_combo = QComboBox()
+        self.erase_standard_combo.addItem("Zero Fill / 1-Pass", "zero-fill")
+        self.erase_standard_combo.addItem("DoD 3-Pass", "dod-3pass")
+        self.erase_standard_combo.addItem("DoD 7-Pass", "dod-7pass")
+        self.erase_standard_combo.addItem("Secure Erase", "secure-erase")
+        self.erase_standard_combo.addItem("Secure Erase Enhanced", "secure-erase-enhanced")
+        self.erase_standard_combo.addItem("Blancco kompatibel", "blancco")
+        self.erase_standard_combo.setMinimumHeight(38)
+        self.erase_standard_combo.setStyleSheet(
+            "QComboBox { padding: 6px 10px; font-weight: 600; }"
+            "QComboBox::drop-down { width: 24px; }"
+        )
+
+        combo_row = QHBoxLayout()
+        combo_row.setSpacing(8)
+        combo_row.addWidget(self.erase_tool_combo)
+        combo_row.addWidget(self.erase_standard_combo)
+        layout.addLayout(combo_row)
+
+        button_row = QGridLayout()
+        button_row.setSpacing(8)
         self.btn_nwipe = self._create_tile_button("Nwipe", self.run_nwipe, icons.ICON_NWIPE)
         self.btn_secure = self._create_tile_button(
-            "Secure Erase", self.run_secure_erase, icons.ICON_SECURE_ERASE
+            "Löschung starten", self.run_secure_erase, icons.ICON_SECURE_ERASE
         )
-        buttons = [self.btn_nwipe, self.btn_secure]
-        return self._build_grid_box("Löschen / Secure Erase", buttons, columns=2)
+        button_row.addWidget(self.btn_nwipe, 0, 0)
+        button_row.addWidget(self.btn_secure, 0, 1)
+        layout.addLayout(button_row)
+
+        box.setLayout(layout)
+        return box
 
     def _build_external_group(self) -> QGroupBox:
         buttons = [
@@ -405,6 +447,7 @@ class MainWindow(QMainWindow):
             "erase_standard": data.get("erase_standard", device.get("erase_standard", "")),
             "erase_ok": data.get("erase_ok", device.get("erase_ok")),
             "command": data.get("command") or device.get("command") or "",
+            "mapping_hint": data.get("mapping_hint") or device.get("mapping_hint") or "",
         }
         try:
             append_wipe_log(entry)
@@ -446,6 +489,7 @@ class MainWindow(QMainWindow):
                     "erase_method",
                     "erase_standard",
                     "command",
+                    "mapping_hint",
                 ):
                     if key in previous_entry and (normalized.get(key) is None or normalized.get(key) == ""):
                         normalized[key] = previous_entry.get(key)
@@ -552,6 +596,24 @@ class MainWindow(QMainWindow):
     def _device_target(self, dev: Dict) -> str:
         return dev.get("target") or dev.get("path") or dev.get("device")
 
+    def _selected_tool(self) -> tuple[str, str]:
+        if hasattr(self, "erase_tool_combo"):
+            idx = self.erase_tool_combo.currentIndex()
+            return (
+                str(self.erase_tool_combo.itemData(idx)),
+                str(self.erase_tool_combo.currentText()),
+            )
+        return "secure", "Secure Erase"
+
+    def _selected_standard(self) -> tuple[str, str]:
+        if hasattr(self, "erase_standard_combo"):
+            idx = self.erase_standard_combo.currentIndex()
+            return (
+                str(self.erase_standard_combo.itemData(idx)),
+                str(self.erase_standard_combo.currentText()),
+            )
+        return "zero-fill", "Zero Fill / 1-Pass"
+
     def _ensure_devices_selected(self) -> List[Dict] | None:
         devices = self.selected_devices()
         if not devices:
@@ -562,6 +624,8 @@ class MainWindow(QMainWindow):
     def _handle_runner_error(self, exc: Exception) -> None:
         QMessageBox.critical(self, "Fehler", str(exc))
         self.status_logger.error(str(exc))
+        if hasattr(self, "debug_logger"):
+            self.debug_logger.error("Runner-Fehler: %s", exc)
 
     def _filter_erasable(self, devices: List[Dict]) -> List[Dict] | None:
         selected_for_erase = [d for d in devices if d.get("erase_allowed")]
@@ -657,40 +721,100 @@ class MainWindow(QMainWindow):
         devices = self._filter_erasable(devices)
         if not devices:
             return
-        planner = secure_erase.SecureErasePlanner(self.expert_mode.enabled)
-        if not planner.confirm_devices(self, devices):
+
+        tool_value, tool_label = self._selected_tool()
+        standard_value, standard_label = self._selected_standard()
+
+        if tool_value == "nwipe":
+            self._run_nwipe_selected(devices, standard_label)
+            return
+
+        if tool_value == "badblocks":
+            self._run_badblocks_destructive(devices, standard_label)
+            return
+
+        planner = self.secure_planner
+        planner.expert_enabled = self.expert_mode.enabled
+        if not planner.confirm_devices(self, devices, tool_label, standard_label):
             return
         try:
             for dev in devices:
-                target_path = dev.get("target") or dev.get("path") or dev.get("device")
-                if dev.get("path", "").startswith("/dev/megaraid/"):
-                    target_path = device_scan.resolve_megaraid_target(dev)
-                if not target_path or not str(target_path).startswith(("/dev/sd", "/dev/nvme")):
-                    raise RuntimeError("Dieses Werkzeug kann auf MegaRAID-Drives nicht direkt ausgeführt werden.")
                 dev_for_cmd = dev.copy()
-                dev_for_cmd["device"] = target_path
-                dev["target"] = target_path
-                commands = planner.build_commands(dev_for_cmd)
-                result = secure_erase.execute_commands(commands)
-                method = self._erase_method_label(dev_for_cmd)
+                plan = planner.map_standard_to_commands(dev_for_cmd, standard_value)
+                dev_for_cmd["device"] = plan.get("target")
+                dev["target"] = plan.get("target")
+                result = secure_erase.execute_commands(plan.get("commands", []))
                 updates = {
                     "erase_ok": result.get("ok"),
                     "erase_timestamp": result.get("timestamp"),
-                    "erase_method": method,
-                    "erase_standard": method,
+                    "erase_method": plan.get("method"),
+                    "erase_standard": plan.get("standard", standard_label),
                     "command": result.get("command"),
                     "timestamp": result.get("timestamp"),
+                    "mapping_hint": plan.get("mapping_hint"),
                 }
-                self._apply_device_updates(
-                    dev,
-                    updates,
-                )
-                self.status_logger.success(
-                    f"Secure Erase gestartet für {dev['device']} – OK={result.get('ok')}"
+                if result.get("error"):
+                    self.debug_logger.error("Secure Erase Fehler: %s", result.get("error"))
+                self._apply_device_updates(dev, updates)
+                status_fn = self.status_logger.success if result.get("ok") else self.status_logger.error
+                status_fn(
+                    f"Secure Erase ausgeführt für {dev['device']} ({plan.get('target')}) – OK={result.get('ok')}"
                 )
                 self._log_device_event(dev, updates)
             self._populate_table()
         except RuntimeError as exc:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for dev in devices:
+                updates = {
+                    "erase_method": "Secure Erase (ATA/NVMe)",
+                    "erase_standard": standard_label,
+                    "erase_ok": False,
+                    "command": "",
+                    "timestamp": now,
+                }
+                self._apply_device_updates(dev, updates)
+                self._log_device_event(dev, updates)
+            self._populate_table()
+            self._handle_runner_error(exc)
+
+    def _run_badblocks_destructive(self, devices: List[Dict], standard_label: str) -> None:
+        try:
+            for dev in devices:
+                result = badblocks_runner.run_badblocks(dev, "destructive", erase_standard=standard_label)
+                updates = {
+                    "erase_ok": result.get("ok"),
+                    "erase_timestamp": result.get("timestamp"),
+                    "erase_method": result.get("method"),
+                    "erase_standard": standard_label or result.get("method"),
+                    "command": result.get("command"),
+                    "timestamp": result.get("timestamp"),
+                }
+                if not result.get("ok"):
+                    self.debug_logger.error(
+                        "Badblocks Destructive fehlgeschlagen für %s: %s", dev.get("device"), result.get("stderr")
+                    )
+                self._apply_device_updates(dev, updates)
+                target = result.get("target") or dev.get("target") or dev.get("device")
+                status_fn = self.status_logger.success if result.get("ok") else self.status_logger.error
+                status_fn(
+                    f"Badblocks Destructive auf {dev['device']} ({target}) – OK={result.get('ok')}"
+                )
+                self._log_device_event(dev, updates)
+            self._populate_table()
+        except RuntimeError as exc:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for dev in devices:
+                updates = {
+                    "erase_ok": False,
+                    "erase_timestamp": now,
+                    "erase_method": "Badblocks Destructive",
+                    "erase_standard": standard_label,
+                    "command": "",
+                    "timestamp": now,
+                }
+                self._apply_device_updates(dev, updates)
+                self._log_device_event(dev, updates)
+            self._populate_table()
             self._handle_runner_error(exc)
 
     def run_fio(self):
@@ -752,6 +876,18 @@ class MainWindow(QMainWindow):
                 )
             self._populate_table()
         except RuntimeError as exc:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for dev in devices:
+                updates = {
+                    "erase_method": "Nwipe (Default)",
+                    "erase_standard": standard_label,
+                    "erase_ok": False,
+                    "command": "",
+                    "timestamp": now,
+                }
+                self._apply_device_updates(dev, updates)
+                self._log_device_event(dev, updates)
+            self._populate_table()
             self._handle_runner_error(exc)
 
     def run_gsmartcontrol(self):
@@ -868,24 +1004,27 @@ class MainWindow(QMainWindow):
         devices = self._filter_erasable(devices)
         if not devices:
             return
+        _, standard_label = self._selected_standard()
+        self._run_nwipe_selected(devices, standard_label)
+
+    def _run_nwipe_selected(self, devices: List[Dict], standard_label: str) -> None:
         try:
-            result = nwipe_runner.run_nwipe(devices)
+            result = nwipe_runner.run_nwipe(devices, standard_label)
             targets = result.get("targets", [])
             erase_result = result.get("erase_result", {})
             self.status_logger.info(f"Nwipe gestartet auf {', '.join(targets)}")
             command = erase_result.get("command") or f"nwipe --sync --verify=last {' '.join(targets)}"
             timestamp = erase_result.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for dev in devices:
-                self._log_device_event(
-                    dev,
-                    {
-                        "erase_method": erase_result.get("erase_method", "Nwipe"),
-                        "erase_standard": erase_result.get("erase_standard", erase_result.get("erase_method")),
-                        "erase_ok": erase_result.get("erase_ok"),
-                        "command": command,
-                        "timestamp": timestamp,
-                    },
-                )
+                updates = {
+                    "erase_method": erase_result.get("erase_method", "Nwipe"),
+                    "erase_standard": erase_result.get("erase_standard", standard_label),
+                    "erase_ok": erase_result.get("erase_ok"),
+                    "command": command,
+                    "timestamp": timestamp,
+                }
+                self._apply_device_updates(dev, updates)
+                self._log_device_event(dev, updates)
             self._update_summary()
         except RuntimeError as exc:
             self._handle_runner_error(exc)

@@ -2,7 +2,7 @@ import datetime
 import subprocess
 from typing import Dict
 
-from modules import config_manager, device_scan
+from modules import config_manager, secure_erase
 
 
 MODES = {
@@ -12,18 +12,10 @@ MODES = {
 
 
 def resolve_target(dev: Dict) -> str:
-    path = dev.get("path") or dev.get("device") or ""
-    if path.startswith("/dev/megaraid/"):
-        resolved = device_scan.resolve_megaraid_target(dev)
-        if resolved and resolved.startswith(("/dev/sd", "/dev/nvme")):
-            return resolved
-        raise RuntimeError("Dieses Werkzeug kann auf MegaRAID-Drives nicht direkt ausgeführt werden.")
-    if path and path.startswith(("/dev/sd", "/dev/nvme")):
-        return path
-    raise RuntimeError("Badblocks: Kein gültiger Gerätepfad gefunden")
+    return secure_erase.resolve_erase_target(dev)
 
 
-def run_badblocks(dev: Dict, mode: str) -> Dict:
+def run_badblocks(dev: Dict, mode: str, erase_standard: str | None = None) -> Dict:
     args = MODES.get(mode, MODES["read-only"])
     target = resolve_target(dev)
     pw = config_manager.get_sudo_password()
@@ -48,7 +40,7 @@ def run_badblocks(dev: Dict, mode: str) -> Dict:
         "ok": ok,
         "timestamp": timestamp,
         "method": method,
-        "erase_standard": method,
+        "erase_standard": erase_standard or method,
         "target": target,
         "command": " ".join(cmd),
         "stdout": proc.stdout or "",

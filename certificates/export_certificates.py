@@ -36,6 +36,8 @@ def _normalized_entry(entry: Dict) -> Dict:
     if normalized.get("erase_ok") is None:
         missing_fields.append("erase_ok")
         normalized["erase_ok"] = None
+    if normalized.get("mapping_hint") in (None, ""):
+        normalized["mapping_hint"] = ""
 
     if missing_fields:
         normalized["warnings"] = missing_fields
@@ -163,6 +165,7 @@ def read_snapshot_entries() -> List[Dict]:
                 "erase_standard": dev.get("erase_standard", ""),
                 "erase_ok": dev.get("erase_ok"),
                 "command": dev.get("command", ""),
+                "mapping_hint": dev.get("mapping_hint", ""),
             }
         )
     return entries
@@ -211,6 +214,11 @@ def create_pdf(entry: Dict) -> str:
     c.setFont("Helvetica", 10)
     command = normalized.get("command", "")
     y = _wrap_text(c, command, 50, y, int(width - 80), 14)
+
+    mapping_hint = normalized.get("mapping_hint")
+    if mapping_hint:
+        c.setFont("Helvetica-Oblique", 10)
+        y = _wrap_text(c, f"Mapping: {mapping_hint}", 50, y, int(width - 80), 14)
 
     c.line(50, y - 10, width - 50, y - 10)
     y -= 40
