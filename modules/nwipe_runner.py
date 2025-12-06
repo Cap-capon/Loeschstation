@@ -11,20 +11,17 @@ logger = logging.getLogger("loeschstation")
 
 
 def _resolve_megaraid_path(dev: Dict) -> str:
-    linux_devices = device_scan.scan_linux_disks()
-    target_size = dev.get("size", "")
-    target_model = dev.get("model", "")
-    for candidate in linux_devices:
-        if candidate.get("size", "") == target_size and candidate.get("model", "") == target_model:
-            return candidate.get("path") or candidate.get("device", "")
-    raise RuntimeError("Nwipe: MegaRAID-Device wird aktuell nicht unterstützt")
+    resolved = device_scan.resolve_megaraid_target(dev)
+    if resolved and resolved.startswith(("/dev/sd", "/dev/nvme")):
+        return resolved
+    raise RuntimeError("Dieses Werkzeug kann auf MegaRAID-Drives nicht direkt ausgeführt werden.")
 
 
 def _resolve_target(dev: Dict) -> str:
     path = dev.get("path") or dev.get("device") or ""
     if path.startswith("/dev/megaraid/"):
         return _resolve_megaraid_path(dev)
-    if path:
+    if path and path.startswith(("/dev/sd", "/dev/nvme")):
         return path
     raise RuntimeError("Nwipe: Kein gültiger Gerätepfad gefunden")
 

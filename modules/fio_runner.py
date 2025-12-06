@@ -4,7 +4,7 @@ import shlex
 import subprocess
 from typing import Dict, List
 
-from modules import config_manager
+from modules import config_manager, device_scan
 
 
 logger = logging.getLogger("loeschstation")
@@ -57,6 +57,16 @@ def run_preset(device: str, preset: str) -> None:
     _spawn_with_sudo(args)
 
 
+def _resolve_target_path(device: str) -> str | None:
+    if not device:
+        return None
+    if not device.startswith("/dev/megaraid/"):
+        return device
+
+    resolved = device_scan.resolve_megaraid_target({"path": device})
+    return resolved
+
+
 def run_preset_with_result(device: str, preset: str) -> Dict:
     """
     Führt ein FIO-Preset synchron aus und liefert ein Ergebnis-Dict zurück.
@@ -67,8 +77,13 @@ def run_preset_with_result(device: str, preset: str) -> Dict:
     werden können.
     """
 
+    resolved = _resolve_target_path(device)
+    if not resolved or not str(resolved).startswith(("/dev/sd", "/dev/nvme")):
+        logger.error("FIO-Device not resolvable: %s", device)
+        return {"ok": False, "error": "FIO-Device not resolvable"}
+
     args = PRESETS.get(preset, PRESETS["quick-read"]).copy()
-    args = [a.format(device=device) for a in args]
+    args = [a.format(device=resolved) for a in args]
     args.extend(["--output-format=json"])
     pw = config_manager.get_sudo_password()
     if not pw:
@@ -87,6 +102,7 @@ def run_preset_with_result(device: str, preset: str) -> Dict:
     result = _parse_fio_output(stdout)
     result["ok"] = is_fio_result_ok(result, proc.returncode)
     result["command"] = " ".join(cmd)
+    result["target"] = resolved
     if proc.returncode != 0 or not result.get("ok"):
         error_hint = stderr.strip() or stdout.strip() or "Unbekannter Fehler"
         logger.error(

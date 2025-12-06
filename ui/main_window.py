@@ -5,7 +5,7 @@ import sys
 from datetime import datetime
 from typing import List, Dict
 
-from PySide6.QtCore import Qt, QByteArray, QEvent, QTimer
+from PySide6.QtCore import Qt, QByteArray, QEvent, QSize, QTimer
 from PySide6.QtGui import QIcon, QTransform
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -98,7 +98,7 @@ class MainWindow(QMainWindow):
             "Transport",
             "FIO MB/s",
             "FIO IOPS",
-            "FIO Latenz(ms)",
+            "FIO Latenz",
             "FIO OK",
             "Erase Methode",
             "Löschstandard",
@@ -110,7 +110,7 @@ class MainWindow(QMainWindow):
         self.device_table.setAlternatingRowColors(True)
         self.device_table.setSortingEnabled(True)
         header = self.device_table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(QHeaderView.Stretch)
         header.setStretchLastSection(True)
         header.setSectionsMovable(True)
         header.setDragEnabled(True)
@@ -129,10 +129,12 @@ class MainWindow(QMainWindow):
         self.btn_settings.setIcon(self._load_icon(icons.ICON_SETTINGS))
         self.btn_settings.setToolTip("Einstellungen")
         self.btn_settings.setAutoRaise(True)
-        self.btn_settings.setIconSize(self.btn_settings.iconSize())
+        self.btn_settings.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.btn_settings.setStyleSheet("QToolButton { border: none; padding: 0; margin: 0; }")
+        self.btn_settings.setIconSize(QSize(24, 24))
         self.btn_settings.clicked.connect(self.open_settings)
         self.btn_settings.installEventFilter(self)
-        self._settings_icon_pixmap = self.btn_settings.icon().pixmap(32, 32)
+        self._settings_icon_pixmap = self.btn_settings.icon().pixmap(24, 24)
         btn_row.addWidget(self.btn_settings)
 
         btn_row.addStretch()
@@ -184,6 +186,8 @@ class MainWindow(QMainWindow):
 
         self.main_splitter.addWidget(self.bottom_splitter)
         self.main_splitter.setSizes([600, 300])
+        self.main_splitter.setStretchFactor(0, 3)
+        self.main_splitter.setStretchFactor(1, 1)
 
         self._restore_window_state()
         self._update_expert_visibility()
@@ -227,7 +231,7 @@ class MainWindow(QMainWindow):
         if self._settings_icon_pixmap is None:
             return
         rotated = self._settings_icon_pixmap.transformed(
-            QTransform().rotate(18), Qt.SmoothTransformation
+            QTransform().rotate(20), Qt.SmoothTransformation
         )
         self.btn_settings.setIcon(QIcon(rotated))
         QTimer.singleShot(180, self._reset_settings_icon)
@@ -374,6 +378,7 @@ class MainWindow(QMainWindow):
 
         log_dir = config_manager.get_log_dir(self.config)
         snapshot_path = os.path.join(log_dir, "devices_snapshot.json")
+        os.makedirs(log_dir, exist_ok=True)
         payload = {"exported_at": datetime.now().isoformat(), "devices": self.devices}
         try:
             with open(snapshot_path, "w", encoding="utf-8") as f:
@@ -417,6 +422,13 @@ class MainWindow(QMainWindow):
                 normalized["target"] = dev.get("path") or dev.get("device")
             if "device_id" not in normalized or not normalized.get("device_id"):
                 normalized["device_id"] = normalized.get("path") or normalized.get("device")
+
+            if normalized.get("path", "").startswith("/dev/megaraid/"):
+                resolved = device_scan.resolve_megaraid_target(normalized)
+                if resolved:
+                    normalized["target"] = resolved
+            elif normalized.get("path"):
+                normalized["target"] = normalized.get("path")
 
             # Bay entspricht dem ursprünglichen Device-Bezeichner (für Zertifikate relevant)
             normalized["bay"] = normalized.get("bay") or normalized.get("device")
@@ -650,8 +662,14 @@ class MainWindow(QMainWindow):
             return
         try:
             for dev in devices:
+                target_path = dev.get("target") or dev.get("path") or dev.get("device")
+                if dev.get("path", "").startswith("/dev/megaraid/"):
+                    target_path = device_scan.resolve_megaraid_target(dev)
+                if not target_path or not str(target_path).startswith(("/dev/sd", "/dev/nvme")):
+                    raise RuntimeError("Dieses Werkzeug kann auf MegaRAID-Drives nicht direkt ausgeführt werden.")
                 dev_for_cmd = dev.copy()
-                dev_for_cmd["device"] = dev.get("target") or dev["device"]
+                dev_for_cmd["device"] = target_path
+                dev["target"] = target_path
                 commands = planner.build_commands(dev_for_cmd)
                 result = secure_erase.execute_commands(commands)
                 method = self._erase_method_label(dev_for_cmd)
@@ -688,8 +706,19 @@ class MainWindow(QMainWindow):
                 target = dev.get("target") or dev["device"]
                 self.status_logger.info(f"INFO: FIO gestartet ({preset}) auf {dev['device']} ({target})")
                 result = fio_runner.run_preset_with_result(target, preset)
+                if result.get("target"):
+                    dev["target"] = result.get("target")
                 if not result.get("ok"):
                     error_hint = result.get("error") or "FIO konnte keine Kennzahlen liefern."
+                    updates = {
+                        "fio_bw": None,
+                        "fio_iops": None,
+                        "fio_lat": None,
+                        "fio_ok": False,
+                        "command": result.get("command"),
+                    }
+                    self._apply_device_updates(dev, updates)
+                    self._log_device_event(dev, updates)
                     self.debug_logger.error(
                         "FIO-Fehler für %s: %s", dev.get("device"), error_hint
                     )

@@ -102,12 +102,26 @@ def list_physical_drives(controller_id: int) -> List[Dict]:
             or ""
         )
         model = entry.get("Model", "")
-        detail = detail_map.get((eid, slot))
+        detail = detail_map.get((eid, slot)) or {}
         if not detail:
             detail = _get_pd_details(controller_id, eid, slot)
         if detail:
             serial = detail.get("serial") or serial
             model = detail.get("model") or model
+
+        os_path = detail.get("os_path")
+        if not os_path:
+            os_path = _extract_os_path(entry, controller_id, eid, slot)
+
+        if (not serial or not model):
+            udev_serial, udev_model = _udev_serial_and_model(os_path)
+            serial = serial or udev_serial
+            model = model or udev_model
+
+        if not serial:
+            serial = "UNKNOWN"
+        if not model:
+            model = "UNKNOWN"
 
         drives.append(
             {
@@ -121,6 +135,7 @@ def list_physical_drives(controller_id: int) -> List[Dict]:
                 "model": model,
                 "serial": serial,
                 "state": entry.get("State", ""),
+                "os_path": os_path,
             }
         )
     return drives
@@ -161,7 +176,9 @@ def _parse_eid_slot(entry: Dict) -> (Optional[int], Optional[int]):
     return None, None
 
 
-def _collect_pd_details(controller_id: int) -> Dict[Tuple[Optional[int], Optional[int]], Dict[str, str]]:
+def _collect_pd_details(
+    controller_id: int,
+) -> Dict[Tuple[Optional[int], Optional[int]], Dict[str, str]]:
     """
     Liest alle PD-Details in einem Aufruf (/cX /eall /sall show all J) und
     mappt Seriennummer und Modell auf (EID, Slot).
@@ -178,23 +195,42 @@ def _collect_pd_details(controller_id: int) -> Dict[Tuple[Optional[int], Optiona
         return details
 
     resp = (controllers[0] or {}).get("Response Data", {}) or {}
-    for key, value in resp.items():
-        if not isinstance(value, dict):
-            continue
 
-        eid, slot = _parse_eid_slot(value)
-        if (eid is None or slot is None) and isinstance(key, str):
-            match = re.search(r"/e(\d+)/s(\d+)", key, re.IGNORECASE)
-            if match:
-                eid = _safe_int(match.group(1))
-                slot = _safe_int(match.group(2))
-
+    def _store_detail(
+        eid: Optional[int], slot: Optional[int], serial: str, model: str, os_path: str
+    ) -> None:
         if eid is None or slot is None:
-            continue
+            return
+        existing = details.get((eid, slot), {})
+        if serial and not existing.get("serial"):
+            existing["serial"] = str(serial)
+        if model and not existing.get("model"):
+            existing["model"] = str(model)
+        if os_path and not existing.get("os_path"):
+            existing["os_path"] = os_path
+        if existing:
+            details[(eid, slot)] = existing
 
-        serial, model = _extract_serial_and_model(value)
-        if serial or model:
-            details[(eid, slot)] = {"serial": str(serial or ""), "model": str(model or "")}
+    def _scan(value, key_hint: Optional[str] = None):
+        if isinstance(value, dict):
+            eid, slot = _parse_eid_slot(value)
+            if (eid is None or slot is None) and key_hint:
+                match = re.search(r"/e(\d+)/s(\d+)", key_hint, re.IGNORECASE)
+                if match:
+                    eid = _safe_int(match.group(1))
+                    slot = _safe_int(match.group(2))
+            serial, model = _extract_serial_and_model(value)
+            os_path = _extract_os_path(value, controller_id, eid, slot)
+            if serial or model or os_path:
+                _store_detail(eid, slot, str(serial or ""), str(model or ""), os_path)
+            for nested_key, nested_value in value.items():
+                _scan(nested_value, str(nested_key))
+        elif isinstance(value, list):
+            for item in value:
+                _scan(item, key_hint)
+
+    for key, value in resp.items():
+        _scan(value, str(key))
 
     return details
 
@@ -243,6 +279,61 @@ def _extract_serial_and_model(value: Dict) -> Tuple[str, str]:
     return str(serial or ""), str(model or "")
 
 
+def _extract_os_path(
+    value: Dict, controller_id: Optional[int] = None, eid: Optional[int] = None, slot: Optional[int] = None
+) -> str:
+    """
+    Sucht tief in verschachtelten JSON-Blöcken nach einem OS-Pfad.
+
+    Erkennt diverse StorCLI-Feldnamen (OS Drive Name/OS Path/DriveName) sowie
+    beliebige Strings, die nach /dev/sdX oder /dev/nvmeX aussehen. Falls kein
+    Pfad vorhanden ist, wird ein synthetischer MegaRAID-Pfad erzeugt, damit
+    Matching/Export konsistent bleibt.
+    """
+
+    os_keys = {
+        "os drive name",
+        "os drive name 0",
+        "os drive name 1",
+        "ospath",
+        "os path",
+        "os name",
+        "drive name",
+        "drivename",
+    }
+
+    def _candidate_from_string(text: str) -> str:
+        match = re.search(r"/dev/(sd[a-zA-Z]+\d*|nvme\d+n\d+(p\d+)?)", text)
+        return match.group(0) if match else ""
+
+    def _scan(obj) -> str:
+        if isinstance(obj, dict):
+            for key, val in obj.items():
+                key_lower = str(key).lower()
+                if key_lower in os_keys and isinstance(val, str):
+                    cand = _candidate_from_string(val)
+                    if cand:
+                        return cand
+                cand = _scan(val)
+                if cand:
+                    return cand
+        elif isinstance(obj, list):
+            for item in obj:
+                cand = _scan(item)
+                if cand:
+                    return cand
+        elif isinstance(obj, str):
+            cand = _candidate_from_string(obj)
+            if cand:
+                return cand
+        return ""
+
+    path = _scan(value)
+    if not path and controller_id is not None and eid is not None and slot is not None:
+        path = f"/dev/megaraid/{controller_id}/{eid}:{slot}"
+    return path
+
+
 def _safe_int(value) -> Optional[int]:
     try:
         return int(str(value))
@@ -274,27 +365,32 @@ def set_all_drives_to_jbod(controller_id: Optional[int] = None) -> None:
 
 def _get_pd_details(controller_id: int, eid: int, slot: int) -> Dict[str, str]:
     if eid is None or slot is None:
-        return {"serial": "", "model": ""}
+        return {"serial": "", "model": "", "os_path": ""}
 
     try:
         data = _run_storcli_json(
             [f"/c{controller_id}", f"/e{eid}", f"/s{slot}", "show", "all", "J"]
         )
     except Exception:
-        return {"serial": "", "model": ""}
+        return {"serial": "", "model": "", "os_path": ""}
 
     controllers = data.get("Controllers", []) or []
     if not controllers:
-        return {"serial": "", "model": ""}
+        return {"serial": "", "model": "", "os_path": ""}
 
     resp = (controllers[0] or {}).get("Response Data", {}) or {}
     for key, value in resp.items():
         if not isinstance(value, dict):
             continue
         serial, model = _extract_serial_and_model(value)
+        os_path = _extract_os_path(value, controller_id, eid, slot)
         if serial or model:
-            return {"serial": str(serial or ""), "model": str(model or "")}
-    return {"serial": "", "model": ""}
+            return {
+                "serial": str(serial or ""),
+                "model": str(model or ""),
+                "os_path": os_path,
+            }
+    return {"serial": "", "model": "", "os_path": ""}
 
 
 def _is_jbod_command_invalid(data: Dict) -> bool:
@@ -308,3 +404,36 @@ def _is_jbod_command_invalid(data: Dict) -> bool:
         if "Set Drive JBOD Failed" in description and "command invalid" in err_msg.lower():
             return True
     return False
+
+
+def _udev_serial_and_model(device_path: str) -> Tuple[str, str]:
+    if not device_path:
+        return "", ""
+    try:
+        proc = subprocess.run(
+            ["udevadm", "info", "--query=property", f"--name={device_path}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return "", ""
+
+    if proc.returncode != 0:
+        return "", ""
+
+    serial = ""
+    model = ""
+    for line in (proc.stdout or "").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key == "ID_SERIAL_SHORT":
+            serial = value
+        elif key == "ID_SERIAL" and not serial:
+            serial = value
+        elif key == "ID_MODEL":
+            model = value
+        elif key == "ID_MODEL_ENC" and not model:
+            model = value
+    return serial, model
