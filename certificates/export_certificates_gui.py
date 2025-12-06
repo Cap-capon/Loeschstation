@@ -46,7 +46,7 @@ class CertificateGUI(QWidget):
 
         # Tabelle
         self.table = QTableWidget()
-        self.table.setColumnCount(11)
+        self.table.setColumnCount(12)
         self.table.setHorizontalHeaderLabels(
             [
                 "Timestamp",
@@ -60,6 +60,7 @@ class CertificateGUI(QWidget):
                 "Erase",
                 "Standard",
                 "Befehl",
+                "Mapping",
             ]
         )
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -117,6 +118,7 @@ class CertificateGUI(QWidget):
                 "erase": erase_text,
                 "standard": entry.get("erase_standard", ""),
                 "command": entry.get("command", ""),
+                "mapping": entry.get("mapping_hint", ""),
             }
         )
         return rows
@@ -156,6 +158,7 @@ class CertificateGUI(QWidget):
                 self.table.setItem(row_idx, 8, QTableWidgetItem(row["erase"]))
                 self.table.setItem(row_idx, 9, QTableWidgetItem(row.get("standard", "")))
                 self.table.setItem(row_idx, 10, QTableWidgetItem(row["command"]))
+                self.table.setItem(row_idx, 11, QTableWidgetItem(row.get("mapping", "")))
         except Exception as exc:  # pragma: no cover - defensive UI load
             self.log_text.append(f"Fehler beim Befüllen der Tabelle: {exc}\n")
             return

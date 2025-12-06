@@ -65,6 +65,7 @@ def append_wipe_log(entry: Dict) -> None:
         "erase_standard",
         "erase_ok",
         "command",
+        "mapping_hint",
     ]
 
     exists = os.path.exists(path)
