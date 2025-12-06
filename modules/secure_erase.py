@@ -1,4 +1,4 @@
-"""Secure Erase Planung und Ausführung.
+"""Planung und Ausführung von Secure-Erase-Befehlen.
 
 Dieser Modul kümmert sich um die Planung der Löschbefehle und stellt
 Hilfsfunktionen bereit, um sichere Targets (keine MegaRAID-Geräte) zu
@@ -81,35 +81,38 @@ class SecureErasePlanner:
         return STANDARD_LABELS.get(standard, standard)
 
     def _sata_commands(self, target: str, standard: str) -> Tuple[List[List[str]], str | None]:
+        """Erzeugt hdparm-Befehle entsprechend dem gewünschten Standard."""
+
         mapping_hint = None
-        if standard == "zero-fill":
-            cmd = ["shred", "-n", "0", "-z", target]
-        elif standard == "dod-3pass":
-            cmd = ["shred", "-n", "3", target]
-            mapping_hint = "DoD 3-Pass → shred -n 3"
-        elif standard == "dod-7pass":
-            cmd = ["shred", "-n", "7", target]
-            mapping_hint = "DoD 7-Pass → shred -n 7"
-        elif standard == "secure-erase":
-            cmd = ["hdparm", "--security-erase", "NULL", target]
+        base_password_cmd = ["hdparm", "--user-master", "u", "--security-set-pass", "PASS", target]
+
+        if standard == "secure-erase" or standard == "zero-fill":
+            erase_cmd = ["hdparm", "--security-erase", "PASS", target]
+            mapping_hint = "Secure Erase → hdparm security-erase"
         elif standard == "secure-erase-enhanced":
-            cmd = ["hdparm", "--security-erase-enhanced", "NULL", target]
-        elif standard == "blancco":
-            cmd = ["shred", "-n", "0", "-z", target]
-            mapping_hint = "Blancco kompatibel → Zero Fill"
+            erase_cmd = ["hdparm", "--security-erase-enhanced", "PASS", target]
+            mapping_hint = "Secure Erase Enhanced → hdparm security-erase-enhanced"
         else:
             raise RuntimeError(f"Unbekannter Löschstandard: {standard}")
-        return [cmd], mapping_hint
+
+        return [base_password_cmd, erase_cmd], mapping_hint
 
     def _nvme_commands(self, target: str, standard: str) -> Tuple[List[List[str]], str | None]:
+        """Builds NVMe format-Befehle inkl. SES-Flag."""
+
         mapping = {
-            "zero-fill": ["nvme", "format", target, "--lbaf=0", "--ses=0"],
+            "zero-fill": ["nvme", "format", target, "--ses=0"],
             "secure-erase": ["nvme", "format", target, "--ses=1"],
             "secure-erase-enhanced": ["nvme", "format", target, "--ses=2"],
         }
         if standard not in mapping:
             raise RuntimeError("Dieser Löschstandard wird für NVMe nicht unterstützt.")
-        return [mapping[standard]], None
+        hint = None
+        if standard == "secure-erase":
+            hint = "NVMe Secure Erase → ses=1"
+        elif standard == "secure-erase-enhanced":
+            hint = "NVMe Secure Erase Enhanced → ses=2"
+        return [mapping[standard]], hint
 
     def map_standard_to_commands(self, device_info: Dict, standard: str) -> Dict:
         """Liefert Kommando-Planung inkl. Mapping-Hinweis."""
@@ -123,11 +126,12 @@ class SecureErasePlanner:
         else:
             commands, mapping_hint = self._sata_commands(target, standard)
 
+        method = self._standard_label(standard)
         return {
             "commands": commands,
             "target": target,
             "standard": self._standard_label(standard),
-            "method": "Secure Erase (ATA/NVMe)",
+            "method": method,
             "mapping_hint": mapping_hint,
         }
 
@@ -139,6 +143,7 @@ def execute_commands(commands: List[List[str]]) -> Dict:
     if not pw:
         raise RuntimeError("sudo-Passwort nicht konfiguriert")
 
+    start_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     all_ok = True
     executed_commands: List[str] = []
     errors: List[str] = []
@@ -162,6 +167,7 @@ def execute_commands(commands: List[List[str]]) -> Dict:
     return {
         "ok": all_ok,
         "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "start_timestamp": start_timestamp,
         "command": " && ".join(executed_commands),
         "error": "; ".join(e for e in errors if e),
     }

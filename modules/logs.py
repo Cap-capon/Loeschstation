@@ -55,6 +55,8 @@ def append_wipe_log(entry: Dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fieldnames = [
         "timestamp",
+        "start_timestamp",
+        "end_timestamp",
         "bay",
         "device_path",
         "size",
@@ -67,6 +69,7 @@ def append_wipe_log(entry: Dict) -> None:
         "fio_ok",
         "erase_method",
         "erase_standard",
+        "erase_tool",
         "erase_ok",
         "command",
         "mapping_hint",
