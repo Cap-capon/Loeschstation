@@ -30,6 +30,12 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
+CERT_MODULE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "certificates"))
+if CERT_MODULE_DIR not in sys.path:
+    sys.path.insert(0, CERT_MODULE_DIR)
+
+import export_certificates as cert_core
+
 from modules import (
     device_scan,
     secure_erase,
@@ -462,6 +468,23 @@ class MainWindow(QMainWindow):
             append_wipe_log(entry)
         except Exception as exc:  # pragma: no cover - defensive
             self.debug_logger.error("Log-Eintrag fehlgeschlagen: %s", exc)
+        self._maybe_generate_certificate(entry)
+
+    def _maybe_generate_certificate(self, entry: Dict) -> None:
+        auto_enabled = self.config.get("auto_generate_certificates", True)
+        erase_state = entry.get("erase_ok")
+        if not auto_enabled or erase_state is None:
+            return
+
+        try:
+            pdf_path, json_path = cert_core.create_certificate(entry)
+            device_label = entry.get("serial") or entry.get("device_path") or entry.get("bay")
+            self.status_logger.success(f"Zertifikat erzeugt für {device_label}")
+            self.debug_logger.info("Zertifikat erstellt: %s (JSON: %s)", pdf_path, json_path)
+        except Exception as exc:  # pragma: no cover - defensive
+            device_label = entry.get("serial") or entry.get("device_path") or entry.get("bay")
+            self.status_logger.error(f"Zertifikat konnte nicht erstellt werden: {device_label}")
+            self.debug_logger.error("Zertifikatserzeugung fehlgeschlagen: %s", exc)
 
     def _reload_devices(self):
         show_system = self.config.get("show_system_disks", False) or self.expert_mode.enabled

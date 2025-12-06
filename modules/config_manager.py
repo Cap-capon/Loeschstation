@@ -19,6 +19,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "table_column_widths": [],
     "table_header_state": None,
     "table_sort": {"column": 0, "order": "asc"},
+    "auto_generate_certificates": True,
 }
 
 CONFIG_PATH = os.path.expanduser("~/.loeschstation/config.json")
