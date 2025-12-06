@@ -93,6 +93,10 @@ class CertificateGUI(QWidget):
         self.btn_open_certs.clicked.connect(self.open_cert_folder)
         btn_row.addWidget(self.btn_open_certs)
 
+        self.btn_preview = QPushButton("PDF Vorschau öffnen")
+        self.btn_preview.clicked.connect(self.open_latest_certificate)
+        btn_row.addWidget(self.btn_preview)
+
         # Textausgabe
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
@@ -128,13 +132,13 @@ class CertificateGUI(QWidget):
     def load_entries(self):
         self.table.setRowCount(0)
         try:
-            self.entries = cert_core.read_log_entries()
+            self.entries = cert_core.merge_entries()
             if not self.entries:
-                self.entries = cert_core.read_snapshot_entries()
                 log_dir, _, log_file, _ = cert_core._paths()
-                if os.path.exists(log_file):
+                snapshot_path = os.path.join(log_dir, "devices_snapshot.json")
+                if os.path.exists(log_file) or os.path.exists(snapshot_path):
                     self.log_text.append(
-                        "Log-Datei gefunden, aber ohne verwertbare Einträge – Snapshot wird genutzt."
+                        "Keine verwertbaren Einträge gefunden – Log/Snapshot ist leer oder defekt."
                     )
         except Exception as exc:  # pragma: no cover - defensive UI load
             self.entries = []
@@ -149,18 +153,23 @@ class CertificateGUI(QWidget):
             rows = self._rows_from_entries()
             for row_idx, row in enumerate(rows):
                 self.table.insertRow(row_idx)
-                self.table.setItem(row_idx, 0, QTableWidgetItem(row["timestamp"]))
-                self.table.setItem(row_idx, 1, QTableWidgetItem(row["bay"]))
-                self.table.setItem(row_idx, 2, QTableWidgetItem(row["path"]))
-                self.table.setItem(row_idx, 3, QTableWidgetItem(row["size"]))
-                self.table.setItem(row_idx, 4, QTableWidgetItem(row["model"]))
-                self.table.setItem(row_idx, 5, QTableWidgetItem(row["serial"]))
-                self.table.setItem(row_idx, 6, QTableWidgetItem(row["transport"]))
-                self.table.setItem(row_idx, 7, QTableWidgetItem(row["fio"]))
-                self.table.setItem(row_idx, 8, QTableWidgetItem(row["erase"]))
-                self.table.setItem(row_idx, 9, QTableWidgetItem(row.get("standard", "")))
-                self.table.setItem(row_idx, 10, QTableWidgetItem(row["command"]))
-                self.table.setItem(row_idx, 11, QTableWidgetItem(row.get("mapping", "")))
+                for col_idx, key in enumerate(
+                    [
+                        "timestamp",
+                        "bay",
+                        "path",
+                        "size",
+                        "model",
+                        "serial",
+                        "transport",
+                        "fio",
+                        "erase",
+                        "standard",
+                        "command",
+                        "mapping",
+                    ]
+                ):
+                    self.table.setItem(row_idx, col_idx, QTableWidgetItem(row.get(key, "")))
         except Exception as exc:  # pragma: no cover - defensive UI load
             self.log_text.append(f"Fehler beim Befüllen der Tabelle: {exc}\n")
             return
@@ -183,11 +192,12 @@ class CertificateGUI(QWidget):
         count = 0
         for e in self.entries:
             try:
-                path = cert_core.create_pdf(e)
-                self.log_text.append(f"PDF erstellt: {path}")
+                pdf_path, json_path = cert_core.create_certificate(e)
+                self.log_text.append(f"PDF erstellt: {pdf_path}")
+                self.log_text.append(f"JSON exportiert: {json_path}")
                 if e.get("warnings"):
                     self.log_text.append(
-                        f"Hinweis für {path}: fehlende Felder -> {', '.join(e.get('warnings'))}"
+                        f"Hinweis für {pdf_path}: fehlende Felder -> {', '.join(e.get('warnings'))}"
                     )
                 count += 1
             except Exception as exc:  # pragma: no cover - defensive UI action
@@ -204,11 +214,12 @@ class CertificateGUI(QWidget):
         count = 0
         for e in selected:
             try:
-                path = cert_core.create_pdf(e)
-                self.log_text.append(f"PDF erstellt (Auswahl): {path}")
+                pdf_path, json_path = cert_core.create_certificate(e)
+                self.log_text.append(f"PDF erstellt (Auswahl): {pdf_path}")
+                self.log_text.append(f"JSON exportiert: {json_path}")
                 if e.get("warnings"):
                     self.log_text.append(
-                        f"Hinweis für {path}: fehlende Felder -> {', '.join(e.get('warnings'))}"
+                        f"Hinweis für {pdf_path}: fehlende Felder -> {', '.join(e.get('warnings'))}"
                     )
                 count += 1
             except Exception as exc:  # pragma: no cover - defensive UI action
@@ -233,6 +244,19 @@ class CertificateGUI(QWidget):
             subprocess.Popen(["xdg-open", path])
         except Exception as ex:
             QMessageBox.warning(self, "Fehler", f"Ordner konnte nicht geöffnet werden:\n{ex}")
+
+    def open_latest_certificate(self):
+        _, cert_dir, _, _ = cert_core._paths()
+        try:
+            files = [f for f in os.listdir(cert_dir) if f.lower().endswith(".pdf")]
+        except FileNotFoundError:
+            QMessageBox.information(self, "Keine Zertifikate", "Es sind noch keine Zertifikate vorhanden.")
+            return
+        if not files:
+            QMessageBox.information(self, "Keine Zertifikate", "Es sind noch keine Zertifikate vorhanden.")
+            return
+        latest = max(files, key=lambda fn: os.path.getmtime(os.path.join(cert_dir, fn)))
+        self._open_path(os.path.join(cert_dir, latest))
 
 
 def main():
