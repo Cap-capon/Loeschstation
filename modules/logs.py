@@ -8,6 +8,9 @@ from typing import Callable, Dict
 from modules import config_manager
 
 
+logger = logging.getLogger("loeschstation")
+
+
 class StatusLogger:
     def __init__(self, add_callback: Callable[[str], None]):
         self._add_callback = add_callback
@@ -86,8 +89,15 @@ def append_wipe_log(entry: Dict) -> None:
     normalized.setdefault("start_timestamp", normalized.get("start_timestamp") or timestamp)
     normalized.setdefault("end_timestamp", normalized.get("end_timestamp") or timestamp)
     normalized.setdefault("erase_tool", normalized.get("erase_tool", ""))
+    normalized.setdefault("erase_method", normalized.get("erase_method", ""))
+    normalized.setdefault("erase_standard", normalized.get("erase_standard", ""))
     normalized.setdefault("transport", normalized.get("transport", ""))
     normalized.setdefault("fio_ok", normalized.get("fio_ok"))
+    normalized.setdefault("mapping_hint", normalized.get("mapping_hint", ""))
+
+    missing_fields = [key for key in fieldnames if key not in normalized]
+    if missing_fields:
+        logger.warning("wipe_log: fehlende Felder ergänzt: %s", ", ".join(sorted(missing_fields)))
 
     exists = os.path.exists(path)
     with open(path, "a", encoding="utf-8", newline="") as f:
@@ -95,10 +105,18 @@ def append_wipe_log(entry: Dict) -> None:
         if not exists:
             writer.writeheader()
         sanitized = {}
+        empty_fields = []
         for key in fieldnames:
             value = normalized.get(key, "")
             if isinstance(value, bool):
                 sanitized[key] = "True" if value else "False"
             else:
-                sanitized[key] = "" if value is None else value
+                if value in (None, ""):
+                    empty_fields.append(key)
+                    sanitized[key] = "–"
+                else:
+                    sanitized_value = str(value).replace(";", "_")
+                    sanitized[key] = sanitized_value
         writer.writerow(sanitized)
+    if empty_fields:
+        logger.warning("wipe_log: leere Felder mit Platzhalter gefüllt: %s", ", ".join(sorted(empty_fields)))
