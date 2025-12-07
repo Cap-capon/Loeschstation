@@ -70,6 +70,15 @@ def _safe_text(value, default: str = "–") -> str:
     return text
 
 
+def _safe_device_path(value, fallback: str | None = None) -> Tuple[str, str]:
+    raw = (value or fallback or "").strip()
+    display = _safe_text(raw)
+    sanitized = _file_safe(raw)
+    if not sanitized:
+        sanitized = "device"
+    return display, sanitized
+
+
 def _safe_number(value):
     try:
         return float(value)
@@ -114,7 +123,9 @@ def _normalized_entry(entry: Dict) -> Dict:
     normalized["start_timestamp"] = _safe_text(start_timestamp or timestamp)
     normalized["end_timestamp"] = _safe_text(end_timestamp or timestamp)
     normalized["bay"] = _safe_text(normalized.get("bay") or normalized.get("device_path"))
-    normalized["device_path"] = _safe_text(normalized.get("device_path") or normalized.get("bay"))
+    device_display, device_safe = _safe_device_path(normalized.get("device_path"), normalized.get("bay"))
+    normalized["device_path"] = device_display
+    normalized["device_path_safe"] = device_safe
     normalized["size"] = _safe_text(normalized.get("size"))
     normalized["model"] = _safe_text(normalized.get("model"))
     normalized["serial"] = _safe_text(normalized.get("serial") or "NO-SERIAL")
@@ -268,7 +279,7 @@ def merge_entries() -> List[Dict]:
         if key in merged:
             combined = merged[key].copy()
             for k, v in log.items():
-                if v not in (None, ""):
+                if v not in (None, "", "–"):
                     combined[k] = v
             merged[key] = combined
         else:
@@ -334,8 +345,11 @@ def _build_filename(entry: Dict) -> Tuple[str, str]:
     model = entry.get("model") or "MODEL"
     serial_part = _file_safe(serial if serial != "–" else "NO-SERIAL")
     model_part = _file_safe(model)
-    device_part = _file_safe(entry.get("device_path") or entry.get("bay") or "DEVICE")
-    base_name = f"CERT_{serial_part}_{model_part}_{ts}" if serial_part != "NO-SERIAL" else f"CERT_NO-SERIAL_{device_part}_{ts}"
+    device_part = entry.get("device_path_safe") or _file_safe(entry.get("device_path") or entry.get("bay") or "DEVICE")
+    if serial_part == "NO-SERIAL":
+        base_name = f"CERT_DEVICE_{device_part or 'device'}_{ts}"
+    else:
+        base_name = f"CERT_{serial_part}_{model_part}_{ts}"
     return base_name + ".pdf", base_name + ".json"
 
 
@@ -349,31 +363,32 @@ def _status_summary(entry: Dict) -> Tuple[str, colors.Color]:
     return "Unvollständig", colors.orange
 
 
-def _build_device_table(entry: Dict, styles) -> Table:
+def _build_device_table(entry: Dict, styles, available_width: float) -> Table:
+    col_widths = [60 * mm, available_width - 60 * mm]
     data = [
         ["Modell", _safe_text(entry.get("model"))],
         ["Seriennummer", _safe_text(entry.get("serial"))],
         ["Größe", _safe_text(entry.get("size"))],
         ["Transport", _safe_text(entry.get("transport"))],
+        ["Pfad", _safe_text(entry.get("device_path"))],
         ["Mapping-Hint", _safe_text(entry.get("mapping_hint"))],
         ["Erase Tool", _safe_text(entry.get("erase_tool"))],
         ["Löschmethode", _safe_text(entry.get("erase_method"))],
         ["Löschstandard", _safe_text(entry.get("erase_standard"))],
         ["Startzeit", _safe_text(entry.get("start_timestamp"))],
         ["Endzeit", _safe_text(entry.get("end_timestamp") or entry.get("timestamp"))],
-        ["FIO Benchmark", _format_fio_text(entry)],
     ]
-    table = Table(data, colWidths=[50 * mm, 120 * mm])
+    table = Table(data, colWidths=col_widths)
     table.setStyle(
         TableStyle(
             [
                 ("FONT", (0, 0), (-1, -1), "DejaVu", 10),
-                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                ("BOX", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+                ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.lightgrey),
+                ("BOX", (0, 0), (-1, -1), 0.8, colors.grey),
+                ("BACKGROUND", (0, 0), (-1, 1), colors.whitesmoke),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
                 ("TOPPADDING", (0, 0), (-1, -1), 6),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
             ]
@@ -408,6 +423,17 @@ def create_certificate(entry: Dict) -> Tuple[str, str]:
         base.setdefault("timestamp", timestamp)
         base.setdefault("end_timestamp", base.get("erase_timestamp") or timestamp)
         base.setdefault("start_timestamp", base.get("start_timestamp") or timestamp)
+        base.setdefault("bay", base.get("device_path") or base.get("device"))
+        base.setdefault("device_path", base.get("device_path") or base.get("bay") or "")
+        base.setdefault("size", base.get("size") or "")
+        base.setdefault("model", base.get("model") or "")
+        base.setdefault("serial", base.get("serial") or "")
+        base.setdefault("transport", base.get("transport") or "")
+        base.setdefault("erase_standard", base.get("erase_standard") or "")
+        base.setdefault("erase_method", base.get("erase_method") or "")
+        base.setdefault("erase_tool", base.get("erase_tool") or "")
+        base.setdefault("mapping_hint", base.get("mapping_hint") or "")
+        base.setdefault("command", base.get("command") or "")
         return base
 
     prepared_entry = _fallback_entry(entry)
@@ -436,32 +462,104 @@ def create_certificate(entry: Dict) -> Tuple[str, str]:
     doc = SimpleDocTemplate(
         pdf_path,
         pagesize=A4,
-        leftMargin=20 * mm,
-        rightMargin=20 * mm,
+        leftMargin=15 * mm,
+        rightMargin=15 * mm,
         topMargin=15 * mm,
         bottomMargin=20 * mm,
     )
 
+    page_width = A4[0] - doc.leftMargin - doc.rightMargin
+
     story: List = []
     header_content: List = []
+    logo_width = 35 * mm if logo else 1 * mm
     if logo:
-        header_content.append([logo, Paragraph("Löschzertifikat", styles["TitleDejaVu"])])
+        header_content.append([logo, Paragraph("Löschzertifikat", styles["TitleDejaVu"]), ""])
     else:
-        header_content.append([Paragraph("Löschzertifikat", styles["TitleDejaVu"])] )
+        header_content.append([Paragraph("Löschzertifikat", styles["TitleDejaVu"]), "", ""])
 
-    if header_content and logo:
-        header_table = Table(header_content, colWidths=[35 * mm, 140 * mm])
-    else:
-        header_table = Table(header_content)
-    header_table.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+    status_chip = Table(
+        [[Paragraph(f"<b>Status</b><br/><font color='{status_color.hexval()}'>{status_text}</font>", styles["NormalDejaVu"])]],
+        colWidths=[35 * mm],
+    )
+    status_chip.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), status_color.tint(0.8)),
+                ("BOX", (0, 0), (-1, -1), 0.6, status_color),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+
+    header_table = Table(header_content, colWidths=[logo_width, page_width - logo_width - 40 * mm, 40 * mm])
+    header_table.setStyle(TableStyle([["VALIGN", (0, 0), (-1, -1), "MIDDLE"]]))
     story.append(header_table)
-    story.append(Spacer(1, 6 * mm))
+    story.append(Spacer(1, 3 * mm))
 
-    status_para = Paragraph(f"<b>Zusammenfassung:</b> <font color='{status_color.hexval()}'>{status_text}</font>", styles["NormalDejaVu"])
-    story.append(status_para)
+    meta_table = Table(
+        [
+            [
+                Paragraph(
+                    f"<b>{_safe_text(normalized.get('model'))}</b><br/>"
+                    f"Seriennummer: {_safe_text(normalized.get('serial'))}<br/>"
+                    f"Größe: {_safe_text(normalized.get('size'))}",
+                    styles["NormalDejaVu"],
+                ),
+                status_chip,
+            ]
+        ],
+        colWidths=[page_width - 45 * mm, 40 * mm],
+    )
+    meta_table.setStyle(
+        TableStyle(
+            [
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.grey),
+                ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.lightgrey),
+                ("BACKGROUND", (0, 0), (0, -1), colors.whitesmoke),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+    )
+    story.append(meta_table)
     story.append(Spacer(1, 4 * mm))
 
-    story.append(_build_device_table(normalized, styles))
+    story.append(_build_device_table(normalized, styles, page_width))
+    story.append(Spacer(1, 4 * mm))
+
+    fio_table = Table(
+        [
+            ["MB/s", "IOPS", "Latenz", "Status"],
+            [
+                _safe_text(f"{normalized.get('fio_mb'):.2f}" if normalized.get("fio_mb") is not None else "–"),
+                _safe_text(f"{normalized.get('fio_iops'):.0f}" if normalized.get("fio_iops") is not None else "–"),
+                _safe_text(f"{normalized.get('fio_lat'):.3f}" if normalized.get("fio_lat") is not None else "–"),
+                _bool_to_text(normalized.get("fio_ok")),
+            ],
+        ],
+        colWidths=[page_width / 4 for _ in range(4)],
+    )
+    fio_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+                ("FONT", (0, 0), (-1, -1), "DejaVu", 10),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.grey),
+                ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.lightgrey),
+                ("ALIGN", (0, 1), (-1, -1), "CENTER"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    story.append(fio_table)
     story.append(Spacer(1, 4 * mm))
 
     erase_info = Paragraph(

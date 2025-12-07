@@ -100,7 +100,7 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self.summary_bar)
 
         self.device_table = QTableWidget()
-        self.device_table.setColumnCount(16)
+        self.device_table.setColumnCount(17)
         self.device_table.setHorizontalHeaderLabels([
             "Bay",
             "Pfad",
@@ -116,7 +116,8 @@ class MainWindow(QMainWindow):
             "Erase Methode",
             "Erase Tool",
             "Löschstandard",
-            "Timestamp",
+            "Startzeit",
+            "Endzeit",
             "Erase OK",
         ])
         self.device_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -244,8 +245,9 @@ class MainWindow(QMainWindow):
         btn = QToolButton()
         gif_path = os.path.join(os.path.dirname(__file__), "..", "img", "settings_gear.gif")
         self.settings_movie = QMovie(gif_path)
+        self.settings_movie.setScaledSize(QSize(32, 32))
         self.settings_movie.jumpToFrame(0)
-        btn.setIcon(QIcon(gif_path))
+        btn.setIcon(QIcon(self.settings_movie.currentPixmap()))
         btn.setToolTip("Einstellungen")
         btn.setAutoRaise(True)
         btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
@@ -331,6 +333,20 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
 
         # Tool- und Standard-Auswahl im selben Stil wie die Buttons halten
+        self._standard_options = {
+            "nwipe": [
+                ("Zero Fill / 1-Pass", "zero-fill"),
+                ("DoD 3-Pass", "dod-3pass"),
+                ("DoD 7-Pass", "dod-7pass"),
+            ],
+            "secure": [
+                ("Secure Erase", "secure-erase"),
+                ("Secure Erase Enhanced", "secure-erase-enhanced"),
+                ("Zero Fill / 1-Pass", "zero-fill"),
+            ],
+            "badblocks": [("Zero Fill / 1-Pass", "zero-fill")],
+        }
+
         self.erase_tool_combo = QComboBox()
         self.erase_tool_combo.addItem("Nwipe", "nwipe")
         self.erase_tool_combo.addItem("Secure Erase (ATA / NVMe)", "secure")
@@ -341,17 +357,15 @@ class MainWindow(QMainWindow):
             "QComboBox::drop-down { width: 24px; }"
         )
 
+        self.erase_tool_combo.currentIndexChanged.connect(self._sync_erase_standard_options)
+
         self.erase_standard_combo = QComboBox()
-        self.erase_standard_combo.addItem("Zero Fill / 1-Pass", "zero-fill")
-        self.erase_standard_combo.addItem("DoD 3-Pass", "dod-3pass")
-        self.erase_standard_combo.addItem("DoD 7-Pass", "dod-7pass")
-        self.erase_standard_combo.addItem("Secure Erase", "secure-erase")
-        self.erase_standard_combo.addItem("Secure Erase Enhanced", "secure-erase-enhanced")
         self.erase_standard_combo.setMinimumHeight(38)
         self.erase_standard_combo.setStyleSheet(
             "QComboBox { padding: 6px 10px; font-weight: 600; }"
             "QComboBox::drop-down { width: 24px; }"
         )
+        self._sync_erase_standard_options()
 
         combo_row = QHBoxLayout()
         combo_row.setSpacing(8)
@@ -443,11 +457,21 @@ class MainWindow(QMainWindow):
             if not timestamp:
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             snap.setdefault("timestamp", timestamp)
-            snap.setdefault("end_timestamp", snap.get("end_timestamp") or snap.get("erase_timestamp") or timestamp)
             snap.setdefault("start_timestamp", snap.get("start_timestamp") or snap.get("timestamp") or timestamp)
-            snap.setdefault("erase_tool", snap.get("erase_tool", ""))
-            snap.setdefault("transport", snap.get("transport", ""))
+            snap.setdefault("end_timestamp", snap.get("end_timestamp") or snap.get("erase_timestamp") or timestamp)
+            snap.setdefault("erase_timestamp", snap.get("erase_timestamp") or snap.get("end_timestamp") or timestamp)
+            snap.setdefault("erase_method", snap.get("erase_method") or "")
+            snap.setdefault("erase_standard", snap.get("erase_standard") or "")
+            snap.setdefault("erase_tool", snap.get("erase_tool") or "")
+            snap.setdefault("erase_ok", snap.get("erase_ok"))
             snap.setdefault("fio_ok", snap.get("fio_ok"))
+            snap.setdefault("mapping_hint", snap.get("mapping_hint") or "")
+            snap.setdefault("transport", snap.get("transport") or "")
+            snap.setdefault("model", snap.get("model") or "")
+            snap.setdefault("serial", snap.get("serial") or "")
+            snap.setdefault("size", snap.get("size") or "")
+            snap.setdefault("path", snap.get("path") or snap.get("device") or "")
+            snap.setdefault("bay", snap.get("bay") or snap.get("device") or snap.get("path") or "")
             devices.append(snap)
 
         payload = {"exported_at": datetime.now().isoformat(), "devices": devices}
@@ -615,7 +639,8 @@ class MainWindow(QMainWindow):
                     "erase_method",
                     "erase_tool",
                     "erase_standard",
-                    "erase_timestamp",
+                    "start_timestamp",
+                    "end_timestamp",
                     "erase_ok",
                 ]
             ):
@@ -696,14 +721,25 @@ class MainWindow(QMainWindow):
             )
         return "zero-fill", "Zero Fill / 1-Pass"
 
+    def _sync_erase_standard_options(self):
+        tool_value = self.erase_tool_combo.currentData()
+        options = self._standard_options.get(tool_value, [])
+        current_value = self.erase_standard_combo.currentData()
+        self.erase_standard_combo.blockSignals(True)
+        self.erase_standard_combo.clear()
+        for label, value in options:
+            self.erase_standard_combo.addItem(label, value)
+        values = [value for _, value in options]
+        if current_value in values:
+            self.erase_standard_combo.setCurrentIndex(values.index(current_value))
+        else:
+            self.erase_standard_combo.setCurrentIndex(0 if options else -1)
+        self.erase_standard_combo.setEnabled(tool_value != "badblocks")
+        self.erase_standard_combo.blockSignals(False)
+
     def _validate_tool_standard(self, tool: str, standard: str) -> bool:
         """Validiert, ob die gewählte Kombination unterstützt wird."""
-
-        supported = {
-            "nwipe": {"zero-fill", "dod-3pass", "dod-7pass"},
-            "secure": {"zero-fill", "secure-erase", "secure-erase-enhanced"},
-            "badblocks": {"zero-fill"},
-        }
+        supported = {key: {value for _, value in values} for key, values in self._standard_options.items()}
         allowed = supported.get(tool, set())
         if standard in allowed:
             return True
@@ -947,10 +983,12 @@ class MainWindow(QMainWindow):
             return
         try:
             for dev in devices:
+                start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 self.status_logger.info(
                     f"INFO: FIO gestartet ({label}) auf {dev.get('device')} ({self._device_target(dev)})"
                 )
                 result = fio_runner.run_preset_with_result(dev, preset)
+                end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 if result.get("target"):
                     dev["target"] = result.get("target")
                 if result.get("mapping_hint"):
@@ -964,6 +1002,9 @@ class MainWindow(QMainWindow):
                         "fio_ok": False,
                         "command": result.get("command"),
                         "mapping_hint": result.get("mapping_hint", ""),
+                        "start_timestamp": start_time,
+                        "end_timestamp": end_time,
+                        "timestamp": end_time,
                     }
                     self._apply_device_updates(dev, updates)
                     self._log_device_event(dev, updates)
@@ -980,6 +1021,9 @@ class MainWindow(QMainWindow):
                     "fio_ok": result.get("ok"),
                     "command": result.get("command"),
                     "mapping_hint": result.get("mapping_hint", ""),
+                    "start_timestamp": start_time,
+                    "end_timestamp": end_time,
+                    "timestamp": end_time,
                 }
                 self._apply_device_updates(dev, updates)
                 self.status_logger.info(
